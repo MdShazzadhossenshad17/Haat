@@ -41,9 +41,7 @@
 
 ---
 
-## 🗄️ Database Structure (`db.sql`) & ER Diagram
-
-> 📄 **[Download Official HAAT Entity Relationship Diagram (PDF)](HAAT_Database_ER_Diagram.pdf)** — Visual architecture map, foreign key matrix, and complete data dictionary for all 13 tables.
+## 🗄️ Database Structure (`db.sql`)
 
 The entire application runs on 13 interconnected tables defined in [`db.sql`](db.sql):
 

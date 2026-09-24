@@ -190,3 +190,128 @@ function getCartSubtotal() {
 function generateOrderNumber() {
     return 'HAAT-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -5));
 }
+
+/**
+ * ================================================================
+ * Wishlist Functions & Helpers
+ * ================================================================
+ */
+function getWishlistCount($userId = null) {
+    global $db;
+    if ($userId === null && isLoggedIn()) {
+        $userId = $_SESSION['user_id'];
+    }
+    if ($userId) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM `wishlists` WHERE `user_id` = ?");
+        $stmt->execute([$userId]);
+        return (int)$stmt->fetchColumn();
+    }
+    return isset($_SESSION['wishlist']) ? count($_SESSION['wishlist']) : 0;
+}
+
+function isInWishlist($productId, $userId = null) {
+    global $db;
+    if ($userId === null && isLoggedIn()) {
+        $userId = $_SESSION['user_id'];
+    }
+    if ($userId) {
+        $stmt = $db->prepare("SELECT id FROM `wishlists` WHERE `user_id` = ? AND `product_id` = ? LIMIT 1");
+        $stmt->execute([$userId, $productId]);
+        return (bool)$stmt->fetch();
+    }
+    return isset($_SESSION['wishlist']) && in_array((int)$productId, $_SESSION['wishlist']);
+}
+
+function toggleWishlist($productId, $userId = null) {
+    global $db;
+    $productId = (int)$productId;
+    if ($productId <= 0) {
+        return ['success' => false, 'message' => 'Invalid craft product selected.'];
+    }
+
+    if ($userId === null && isLoggedIn()) {
+        $userId = $_SESSION['user_id'];
+    }
+
+    if ($userId) {
+        $stmt = $db->prepare("SELECT id FROM `wishlists` WHERE `user_id` = ? AND `product_id` = ? LIMIT 1");
+        $stmt->execute([$userId, $productId]);
+        $row = $stmt->fetch();
+
+        if ($row) {
+            $del = $db->prepare("DELETE FROM `wishlists` WHERE `id` = ?");
+            $del->execute([$row['id']]);
+            $inWishlist = false;
+            $msg = 'Removed from your saved wishlist.';
+        } else {
+            $ins = $db->prepare("INSERT INTO `wishlists` (`user_id`, `product_id`, `created_at`) VALUES (?, ?, NOW())");
+            $ins->execute([$userId, $productId]);
+            $inWishlist = true;
+            $msg = 'Added craft to your wishlist!';
+        }
+        $count = getWishlistCount($userId);
+        return [
+            'success' => true,
+            'in_wishlist' => $inWishlist,
+            'wishlist_count' => $count,
+            'message' => $msg
+        ];
+    } else {
+        if (!isset($_SESSION['wishlist'])) {
+            $_SESSION['wishlist'] = [];
+        }
+        $key = array_search($productId, $_SESSION['wishlist']);
+        if ($key !== false) {
+            unset($_SESSION['wishlist'][$key]);
+            $_SESSION['wishlist'] = array_values($_SESSION['wishlist']);
+            $inWishlist = false;
+            $msg = 'Removed from your saved wishlist.';
+        } else {
+            $_SESSION['wishlist'][] = $productId;
+            $inWishlist = true;
+            $msg = 'Added craft to your wishlist!';
+        }
+        return [
+            'success' => true,
+            'in_wishlist' => $inWishlist,
+            'wishlist_count' => count($_SESSION['wishlist']),
+            'message' => $msg
+        ];
+    }
+}
+
+function getUserWishlistProducts($userId = null) {
+    global $db;
+    if ($userId === null && isLoggedIn()) {
+        $userId = $_SESSION['user_id'];
+    }
+
+    if ($userId) {
+        $stmt = $db->prepare("
+            SELECT p.*, s.shop_name, s.shop_slug, c.name as category_name, w.id as wishlist_id, w.created_at as saved_date
+            FROM `wishlists` w
+            JOIN `products` p ON w.product_id = p.id
+            JOIN `sellers` s ON p.seller_id = s.id
+            JOIN `categories` c ON p.category_id = c.id
+            WHERE w.user_id = ?
+            ORDER BY w.id DESC
+        ");
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll();
+    } else {
+        $prodIds = $_SESSION['wishlist'] ?? [];
+        if (empty($prodIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($prodIds), '?'));
+        $stmt = $db->prepare("
+            SELECT p.*, s.shop_name, s.shop_slug, c.name as category_name, 0 as wishlist_id, NOW() as saved_date
+            FROM `products` p
+            JOIN `sellers` s ON p.seller_id = s.id
+            JOIN `categories` c ON p.category_id = c.id
+            WHERE p.id IN ($placeholders)
+            ORDER BY p.id DESC
+        ");
+        $stmt->execute($prodIds);
+        return $stmt->fetchAll();
+    }
+}
+

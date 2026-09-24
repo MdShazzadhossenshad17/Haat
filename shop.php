@@ -350,8 +350,8 @@ $districts = $db->query("SELECT DISTINCT district_origin FROM `products` WHERE i
                     <span class="badge badge-gold">-<?= $discount ?>%</span>
                   <?php endif; ?>
                 </div>
-                <button type="button" class="product-wishlist-btn" title="Add to Wishlist" onclick="showToast('Added to your wishlist!', 'success')">
-                  <i class="bi bi-heart"></i>
+                <button type="button" class="product-wishlist-btn <?= isInWishlist($prod['id']) ? 'active' : '' ?>" data-product-id="<?= $prod['id'] ?>" title="Save to Wishlist">
+                  <i class="bi <?= isInWishlist($prod['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($prod['id']) ? 'style="color:#e63946;"' : '' ?>></i>
                 </button>
               </div>
 

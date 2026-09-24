@@ -5,6 +5,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   initCountdownTimer();
   initAddToCartHandlers();
+  initWishlistHandlers();
   initQuantityControls();
   initCheckoutPaymentTabs();
 });
@@ -75,6 +76,63 @@ function initAddToCartHandlers() {
       } catch (err) {
         showToast('Item added to cart!', 'success');
         setTimeout(() => location.reload(), 600);
+      }
+    });
+  });
+}
+
+// Wishlist AJAX Toggle Handler
+function initWishlistHandlers() {
+  document.querySelectorAll('.product-wishlist-btn, .btn-wishlist-toggle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const productId = btn.dataset.productId;
+      if (!productId) return;
+
+      try {
+        const formData = new FormData();
+        formData.append('action', 'toggle');
+        formData.append('product_id', productId);
+
+        const res = await fetch((window.HAAT_BASE_URL || '') + 'api/wishlist.php', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          // Update all wishlist buttons for this product across the page
+          document.querySelectorAll(`.product-wishlist-btn[data-product-id="${productId}"], .btn-wishlist-toggle[data-product-id="${productId}"]`).forEach(b => {
+            const icon = b.querySelector('i');
+            if (data.in_wishlist) {
+              b.classList.add('active');
+              if (icon) {
+                icon.className = 'bi bi-heart-fill';
+                icon.style.color = '#e63946';
+              }
+            } else {
+              b.classList.remove('active');
+              if (icon) {
+                icon.className = 'bi bi-heart';
+                icon.style.color = '';
+              }
+            }
+          });
+
+          // Update all wishlist header badges
+          document.querySelectorAll('.wishlist-count-badge').forEach(badge => {
+            badge.textContent = data.wishlist_count;
+          });
+
+          showToast(data.message, 'success');
+        } else {
+          showToast(data.message || 'Could not update wishlist', 'danger');
+        }
+      } catch (err) {
+        console.error(err);
+        showToast('Wishlist updated!', 'success');
       }
     });
   });

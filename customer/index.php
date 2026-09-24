@@ -86,13 +86,17 @@ $sellerStmt = $db->query("
     GROUP BY s.id, oi.product_id
     ORDER BY (last_message_time IS NOT NULL) DESC, last_message_time DESC, oi.id DESC
 ");
-$orderedProducts = $sellerStmt->fetchAll();
-$orderedSellers = $orderedProducts;
+$orderedProducts = ($sellerStmt) ? $sellerStmt->fetchAll() : [];
+$orderedSellers = is_array($orderedProducts) ? $orderedProducts : [];
 
 // Total unread messages across all sellers
 $unreadTotalStmt = $db->prepare("SELECT COUNT(*) FROM `messages` WHERE `receiver_id` = ? AND `is_read` = 0");
 $unreadTotalStmt->execute([$user['id']]);
 $totalUnreadMessages = (int)$unreadTotalStmt->fetchColumn();
+
+// Customer Saved Wishlist
+$wishlistProducts = getUserWishlistProducts($user['id']);
+$wishlistCount = count($wishlistProducts);
 
 $pageTitle = 'Buyer Dashboard — HAAT';
 require_once __DIR__ . '/../includes/header.php';
@@ -145,6 +149,13 @@ require_once __DIR__ . '/../includes/header.php';
           </a>
         </li>
         <li>
+          <a href="#wishlist" class="dash-tab-link" data-tab="wishlist">
+            <i class="bi bi-heart"></i>
+            <span>Saved Wishlist</span>
+            <span class="badge wishlist-count-badge" style="background:#fde8e8; color:#e63946; font-size:0.75rem; padding:2px 8px; border-radius:12px; margin-left:auto;"><?= $wishlistCount ?></span>
+          </a>
+        </li>
+        <li>
           <a href="#profile" class="dash-tab-link" data-tab="profile">
             <i class="bi bi-person-gear"></i>
             <span>Account Profile</span>
@@ -161,23 +172,31 @@ require_once __DIR__ . '/../includes/header.php';
            ========================================== -->
       <div id="tab-overview" class="dash-panel active">
         
-        <!-- Stats Cards (Wishlist completely removed) -->
-        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:24px;">
-          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-sm);">
-            <div style="font-size:0.78rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Total Orders</div>
-            <div style="font-size:1.8rem; font-weight:800; color:var(--haat-green-dark);"><?= $stats['total_orders'] ?></div>
+        <!-- Stats Cards with Saved Wishlist -->
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; margin-bottom:24px;">
+          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm); cursor:pointer;" onclick="switchTab('orders')">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Total Orders</div>
+            <div style="font-size:1.7rem; font-weight:800; color:var(--haat-green-dark);"><?= $stats['total_orders'] ?></div>
           </div>
 
-          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-sm);">
-            <div style="font-size:0.78rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Total Purchases</div>
-            <div style="font-size:1.8rem; font-weight:800; color:var(--haat-green);"><?= formatPrice($stats['total_spent']) ?></div>
+          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm);">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Total Purchases</div>
+            <div style="font-size:1.7rem; font-weight:800; color:var(--haat-green);"><?= formatPrice($stats['total_spent']) ?></div>
           </div>
 
-          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-sm);">
-            <div style="font-size:0.78rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Seller Conversations</div>
-            <div style="font-size:1.8rem; font-weight:800; color:var(--haat-clay); display:flex; align-items:center; gap:8px;">
+          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm); cursor:pointer;" onclick="switchTab('messages')">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Conversations</div>
+            <div style="font-size:1.7rem; font-weight:800; color:var(--haat-clay); display:flex; align-items:center; gap:8px;">
               <span><?= count($orderedSellers) ?></span>
-              <span style="font-size:0.75rem; font-weight:600; color:var(--text-muted);">Artisan Shops</span>
+              <span style="font-size:0.72rem; font-weight:600; color:var(--text-muted);">Artisans</span>
+            </div>
+          </div>
+
+          <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm); cursor:pointer;" onclick="switchTab('wishlist')">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Saved Wishlist</div>
+            <div style="font-size:1.7rem; font-weight:800; color:#e63946; display:flex; align-items:center; gap:8px;">
+              <span class="wishlist-count-badge"><?= $wishlistCount ?></span>
+              <span style="font-size:0.72rem; font-weight:600; color:var(--text-muted);">Crafts</span>
             </div>
           </div>
         </div>
@@ -514,6 +533,67 @@ require_once __DIR__ . '/../includes/header.php';
       </div>
 
       <!-- ==========================================
+           TAB: SAVED CRAFTS & WISHLIST
+           ========================================== -->
+      <div id="tab-wishlist" class="dash-panel" style="display:none;">
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); padding:26px; box-shadow:var(--shadow-sm);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid var(--haat-border); padding-bottom:14px; flex-wrap:wrap; gap:10px;">
+            <div>
+              <h2 style="font-size:1.35rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
+                <i class="bi bi-heart-fill text-clay"></i> Saved Wishlist Crafts (<?= $wishlistCount ?>)
+              </h2>
+              <p style="color:var(--text-muted); font-size:0.85rem; margin:2px 0 0;">Artisanal creations and products you have bookmarked for purchase</p>
+            </div>
+            <a href="<?= BASE_URL ?>shop.php" class="btn btn-sm btn-outline-green">
+              <i class="bi bi-plus-lg"></i> Browse More Crafts
+            </a>
+          </div>
+
+          <?php if (empty($wishlistProducts)): ?>
+            <div style="text-align:center; padding:45px 20px;">
+              <i class="bi bi-heart text-muted" style="font-size:3rem; color:var(--haat-clay); display:block; margin-bottom:10px;"></i>
+              <h3 style="margin:0 0 6px; font-size:1.2rem;">Your Saved Wishlist is Empty</h3>
+              <p style="color:var(--text-muted); font-size:0.88rem; max-width:400px; margin:0 auto 18px;">
+                Click the heart icon on any handloom saree, terracotta craft, or organic harvest to save it here.
+              </p>
+              <a href="<?= BASE_URL ?>shop.php" class="btn btn-clay btn-sm">Explore Haat Bazaar</a>
+            </div>
+          <?php else: ?>
+            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:18px;">
+              <?php foreach ($wishlistProducts as $wItem): ?>
+                <div id="dash-wishlist-item-<?= $wItem['id'] ?>" style="border:1px solid var(--haat-border); border-radius:var(--radius-md); overflow:hidden; background:#fff; display:flex; flex-direction:column; position:relative; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                  <div style="aspect-ratio:1/1; overflow:hidden; background:#f9f9f9; position:relative;">
+                    <a href="<?= BASE_URL ?>product.php?id=<?= $wItem['id'] ?>">
+                      <img src="<?= sanitize($wItem['featured_image']) ?>" alt="thumb" style="width:100%; height:100%; object-fit:cover;">
+                    </a>
+                    <button type="button" class="product-wishlist-btn active" data-product-id="<?= $wItem['id'] ?>" title="Remove" style="top:8px; right:8px; width:30px; height:30px;">
+                      <i class="bi bi-heart-fill" style="color:#e63946; font-size:0.85rem;"></i>
+                    </button>
+                  </div>
+                  <div style="padding:12px; display:flex; flex-direction:column; flex:1;">
+                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:4px; font-weight:600;">
+                      <?= sanitize($wItem['shop_name']) ?>
+                    </div>
+                    <a href="<?= BASE_URL ?>product.php?id=<?= $wItem['id'] ?>" style="font-size:0.88rem; font-weight:700; color:var(--haat-green-dark); text-decoration:none; margin-bottom:8px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">
+                      <?= sanitize($wItem['name']) ?>
+                    </a>
+                    <div style="margin-top:auto; padding-top:8px; display:flex; justify-content:space-between; align-items:center;">
+                      <span style="font-weight:800; color:var(--haat-green); font-size:1rem;">
+                        <?= formatPrice($wItem['sale_price'] ?: $wItem['price']) ?>
+                      </span>
+                      <button type="button" class="btn btn-sm btn-clay btn-add-cart" data-product-id="<?= $wItem['id'] ?>" style="padding:4px 9px; font-size:0.78rem;">
+                        <i class="bi bi-bag-plus"></i> Cart
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+        </div>
+      </div>
+
+      <!-- ==========================================
            TAB 4: ACCOUNT PROFILE & SETTINGS PANEL
            ========================================== -->
       <div id="tab-profile" class="dash-panel" style="display:none;">
@@ -647,7 +727,7 @@ require_once __DIR__ . '/../includes/header.php';
   // Hash-based tab activation on initial load
   window.addEventListener('DOMContentLoaded', () => {
     const hash = window.location.hash.replace('#', '');
-    if (hash && ['overview', 'orders', 'messages', 'profile'].includes(hash)) {
+    if (hash && ['overview', 'orders', 'messages', 'wishlist', 'profile'].includes(hash)) {
       switchTab(hash);
     } else {
       switchTab('overview');

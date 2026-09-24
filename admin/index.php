@@ -132,8 +132,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_add_category']
     $image = trim($_POST['image'] ?? 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=600&q=80');
     $desc = trim($_POST['description'] ?? '');
 
+    // Support category image upload
+    if (!empty($_FILES['category_file']['name'])) {
+        $targetDir = __DIR__ . '/../assets/uploads/categories/';
+        if (!is_dir($targetDir)) {
+            @mkdir($targetDir, 0777, true);
+        }
+        $ext = strtolower(pathinfo($_FILES['category_file']['name'], PATHINFO_EXTENSION));
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'avif', 'svg'])) {
+            $fileName = 'cat_' . time() . '_' . rand(100, 999) . '.' . $ext;
+            if (move_uploaded_file($_FILES['category_file']['tmp_name'], $targetDir . $fileName)) {
+                $image = BASE_URL . 'assets/uploads/categories/' . $fileName;
+            }
+        }
+    }
+
     if (!empty($name)) {
-        $slug = strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $name)) . '-' . rand(100, 999);
+        $cleanSlug = trim(preg_replace('/[^a-zA-Z0-9]+/', '-', strtolower($name)), '-');
+        if (empty($cleanSlug)) {
+            $cleanSlug = 'craft-category';
+        }
+        $slug = $cleanSlug . '-' . rand(100, 999);
         $ins = $db->prepare("INSERT INTO `categories` (`department`, `name`, `name_bn`, `slug`, `icon`, `image`, `description`, `is_featured`) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
         $ins->execute([$department, $name, $nameBn, $slug, $icon, $image, $desc]);
         $newCatId = $db->lastInsertId();
@@ -164,6 +183,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_add_category']
         header('Location: ' . BASE_URL . 'admin/#categories');
         exit;
     }
+}
+
+// ==========================================
+// 9b. GET ACTION: DELETE CATEGORY
+// ==========================================
+if (isset($_GET['delete_category'])) {
+    $catId = (int)$_GET['delete_category'];
+    $db->prepare("DELETE FROM `categories` WHERE `id` = ?")->execute([$catId]);
+    setFlash('success', 'Craft category removed successfully.');
+    header('Location: ' . BASE_URL . 'admin/#categories');
+    exit;
+}
+
+// ==========================================
+// 9c. POST ACTION: ADMIN UPDATE ORDER & DISPATCH
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_admin_update_order'])) {
+    $orderId = (int)($_POST['order_id'] ?? 0);
+    $orderStatus = trim($_POST['order_status'] ?? 'pending');
+    $paymentStatus = trim($_POST['payment_status'] ?? 'unpaid');
+
+    $up = $db->prepare("UPDATE `orders` SET `order_status` = ?, `payment_status` = ? WHERE `id` = ?");
+    $up->execute([$orderStatus, $paymentStatus, $orderId]);
+
+    // Push tracking event
+    $ordInfo = $db->query("SELECT order_number, courier_partner FROM `orders` WHERE `id` = {$orderId}")->fetch();
+    if ($ordInfo) {
+        $titles = [
+            'pending' => 'Order Placed & Awaiting Fulfillment',
+            'processing' => 'Order Processing at Artisan Guild Hub',
+            'shipped' => 'Handed over to Delivery Courier',
+            'delivered' => 'Package Delivered to Recipient',
+            'cancelled' => 'Order Cancelled'
+        ];
+        $evIns = $db->prepare("INSERT INTO `order_tracking_events` (`order_id`, `order_number`, `title`, `actor`, `location`, `status_key`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+        $evIns->execute([
+            $orderId,
+            $ordInfo['order_number'],
+            $titles[$orderStatus] ?? 'Order Status Update',
+            $ordInfo['courier_partner'] ?? 'Central Logistics Hub',
+            'Central Logistics Hub (Dhaka)',
+            $orderStatus,
+            "Platform updated overall delivery status to " . strtoupper($orderStatus) . "."
+        ]);
+        if ($orderStatus === 'delivered' || $orderStatus === 'shipped') {
+            $db->prepare("UPDATE `order_items` SET `vendor_status` = ? WHERE `order_id` = ?")->execute([$orderStatus, $orderId]);
+        }
+    }
+
+    setFlash('success', 'Order status and tracking updated successfully.');
+    header('Location: ' . BASE_URL . 'admin/#orders');
+    exit;
 }
 
 // ==========================================
@@ -198,6 +269,7 @@ $totalUsers = (int)$db->query("SELECT COUNT(*) FROM `users`")->fetchColumn();
 
 // Recent Platform Orders for Overview
 $recentOrders = $db->query("SELECT * FROM `orders` ORDER BY id DESC LIMIT 6")->fetchAll();
+$allOrdersList = $db->query("SELECT * FROM `orders` ORDER BY id DESC")->fetchAll();
 
 // Store-by-Store Analytics Breakdown
 $storeAnalytics = $db->query("SELECT s.id, s.shop_name, s.district, s.division, s.is_verified, s.status,
@@ -341,6 +413,12 @@ require_once __DIR__ . '/../includes/header.php';
         <a href="#overview" class="admin-tab-link active" data-tab="overview">
           <i class="bi bi-speedometer2"></i>
           <span>Dashboard Overview</span>
+        </a>
+
+        <!-- Platform Orders -->
+        <a href="#orders" class="admin-tab-link" data-tab="orders">
+          <i class="bi bi-receipt"></i>
+          <span>Platform Orders (<?= $totalOrders ?>)</span>
         </a>
 
         <!-- Store Analytics -->
@@ -488,6 +566,92 @@ require_once __DIR__ . '/../includes/header.php';
           <?php endif; ?>
         </div>
 
+      </div>
+
+      <!-- ==========================================
+           TAB: PLATFORM ORDERS MANAGEMENT
+           ========================================== -->
+      <div id="panel-orders" class="admin-panel" style="display:none;">
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); padding:26px; box-shadow:var(--shadow-sm);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:12px;">
+            <div>
+              <h2 style="font-size:1.35rem; color:var(--haat-green-dark); margin:0;">
+                <i class="bi bi-receipt text-clay"></i> Platform Orders & Live Tracking (<?= count($allOrdersList) ?>)
+              </h2>
+              <p style="color:var(--text-muted); font-size:0.85rem; margin:3px 0 0;">Update order delivery and payment status directly in database and push live tracking events</p>
+            </div>
+          </div>
+
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+              <thead>
+                <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.8rem; text-transform:uppercase;">
+                  <th style="padding:10px 8px;">Order #</th>
+                  <th style="padding:10px 8px;">Customer</th>
+                  <th style="padding:10px 8px;">Amount</th>
+                  <th style="padding:10px 8px;">Payment</th>
+                  <th style="padding:10px 8px;">Fulfillment Status</th>
+                  <th style="padding:10px 8px; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php if (empty($allOrdersList)): ?>
+                  <tr><td colspan="6" style="text-align:center; padding:30px; color:var(--text-muted);">No orders found.</td></tr>
+                <?php else: ?>
+                  <?php foreach ($allOrdersList as $ord): ?>
+                    <tr style="border-bottom:1px solid var(--haat-border);">
+                      <td style="padding:12px 8px;">
+                        <strong style="color:var(--haat-green-dark);"><?= sanitize($ord['order_number']) ?></strong>
+                        <div style="font-size:0.75rem; color:var(--text-muted);"><?= date('d M Y, h:i A', strtotime($ord['created_at'])) ?></div>
+                      </td>
+                      <td style="padding:12px 8px;">
+                        <strong><?= sanitize($ord['shipping_name']) ?></strong>
+                        <div style="font-size:0.75rem; color:var(--text-muted);"><?= sanitize($ord['shipping_phone']) ?> • <?= sanitize($ord['district']) ?></div>
+                      </td>
+                      <td style="padding:12px 8px; font-weight:800; color:var(--haat-green);">
+                        <?= formatPrice($ord['grand_total']) ?>
+                      </td>
+                      <td style="padding:12px 8px;">
+                        <form method="POST" action="<?= BASE_URL ?>admin/" style="display:inline-flex; align-items:center; gap:6px;">
+                          <input type="hidden" name="action_admin_update_order" value="1">
+                          <input type="hidden" name="order_id" value="<?= $ord['id'] ?>">
+                          <input type="hidden" name="order_status" value="<?= $ord['order_status'] ?>">
+                          <select name="payment_status" onchange="this.form.submit()" style="padding:4px 8px; border-radius:4px; font-size:0.78rem; font-weight:600; border:1px solid var(--haat-border); background:#fff;">
+                            <option value="unpaid" <?= $ord['payment_status'] === 'unpaid' ? 'selected' : '' ?>>Unpaid</option>
+                            <option value="paid" <?= $ord['payment_status'] === 'paid' ? 'selected' : '' ?>>Paid</option>
+                            <option value="refunded" <?= $ord['payment_status'] === 'refunded' ? 'selected' : '' ?>>Refunded</option>
+                          </select>
+                        </form>
+                      </td>
+                      <td style="padding:12px 8px;">
+                        <form method="POST" action="<?= BASE_URL ?>admin/" style="display:inline-flex; align-items:center; gap:6px;">
+                          <input type="hidden" name="action_admin_update_order" value="1">
+                          <input type="hidden" name="order_id" value="<?= $ord['id'] ?>">
+                          <input type="hidden" name="payment_status" value="<?= $ord['payment_status'] ?>">
+                          <select name="order_status" onchange="this.form.submit()" style="padding:4px 8px; border-radius:4px; font-size:0.78rem; font-weight:600; border:1px solid var(--haat-border); background:#fff;">
+                            <option value="pending" <?= $ord['order_status'] === 'pending' ? 'selected' : '' ?>>Pending</option>
+                            <option value="processing" <?= $ord['order_status'] === 'processing' ? 'selected' : '' ?>>Processing</option>
+                            <option value="shipped" <?= $ord['order_status'] === 'shipped' ? 'selected' : '' ?>>Shipped</option>
+                            <option value="delivered" <?= $ord['order_status'] === 'delivered' ? 'selected' : '' ?>>Delivered</option>
+                            <option value="cancelled" <?= $ord['order_status'] === 'cancelled' ? 'selected' : '' ?>>Cancelled</option>
+                          </select>
+                        </form>
+                      </td>
+                      <td style="padding:12px 8px; text-align:right; white-space:nowrap;">
+                        <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:4px 8px; font-size:0.78rem;">
+                          Track
+                        </a>
+                        <a href="<?= BASE_URL ?>order-confirmation.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-clay" style="padding:4px 8px; font-size:0.78rem; margin-left:4px;">
+                          Invoice
+                        </a>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                <?php endif; ?>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- ==========================================
@@ -1001,9 +1165,12 @@ require_once __DIR__ . '/../includes/header.php';
                         <td style="padding:12px 8px;">
                           <span class="badge badge-green"><?= $cat['product_count'] ?></span>
                         </td>
-                        <td style="padding:12px 8px; text-align:right;">
+                        <td style="padding:12px 8px; text-align:right; white-space:nowrap;">
                           <a href="<?= BASE_URL ?>shop.php?category=<?= sanitize($cat['slug']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:3px 8px; font-size:0.8rem;">
                             View
+                          </a>
+                          <a href="<?= BASE_URL ?>admin/?delete_category=<?= $cat['id'] ?>" onclick="return confirm('Are you sure you want to delete this category?');" class="btn btn-sm" style="padding:3px 8px; font-size:0.8rem; color:#c52828; border:1px solid #f8c8dc; margin-left:4px;" title="Delete Category">
+                            <i class="bi bi-trash"></i>
                           </a>
                         </td>
                       </tr>
@@ -1024,7 +1191,7 @@ require_once __DIR__ . '/../includes/header.php';
                 <strong>Dynamic Seller Alert:</strong> Creating a category will automatically notify all registered artisan sellers so they can add crafts under this category.
               </div>
 
-              <form method="POST" action="<?= BASE_URL ?>admin/">
+              <form method="POST" action="<?= BASE_URL ?>admin/" enctype="multipart/form-data">
                 <input type="hidden" name="action_add_category" value="1">
 
                 <div style="margin-bottom:12px;">
@@ -1052,7 +1219,12 @@ require_once __DIR__ . '/../includes/header.php';
                 </div>
 
                 <div style="margin-bottom:12px;">
-                  <label style="font-weight:600; font-size:0.83rem; display:block; margin-bottom:4px;">Cover Image URL</label>
+                  <label style="font-weight:600; font-size:0.83rem; display:block; margin-bottom:4px;">Upload Cover Image File</label>
+                  <input type="file" name="category_file" accept="image/*" style="width:100%; padding:7px 10px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.82rem; background:#fff; outline:none;">
+                </div>
+
+                <div style="margin-bottom:12px;">
+                  <label style="font-weight:600; font-size:0.83rem; display:block; margin-bottom:4px;">Or Cover Image URL</label>
                   <input type="url" name="image" value="https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=600&q=80" style="width:100%; padding:9px 12px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.9rem; outline:none;">
                 </div>
 
@@ -1156,7 +1328,7 @@ require_once __DIR__ . '/../includes/header.php';
 <script>
   // Unified Admin Tab Switching
   function switchAdminTab(tabId) {
-    const validTabs = ['overview', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (!validTabs.includes(tabId)) {
       tabId = 'overview';
     }
@@ -1190,7 +1362,7 @@ require_once __DIR__ . '/../includes/header.php';
   // Handle Hash on Page Load
   window.addEventListener('DOMContentLoaded', () => {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ['overview', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (hash && validTabs.includes(hash)) {
       switchAdminTab(hash);
     } else {
@@ -1210,7 +1382,7 @@ require_once __DIR__ . '/../includes/header.php';
   // Handle browser back/forward buttons
   window.addEventListener('hashchange', () => {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ['overview', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (hash && validTabs.includes(hash)) {
       switchAdminTab(hash);
     }

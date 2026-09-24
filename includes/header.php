@@ -8,6 +8,7 @@ require_once __DIR__ . '/functions.php';
 $user = currentUser();
 $cartCount = getCartCount();
 $cartSubtotal = getCartSubtotal();
+$wishlistCount = getWishlistCount();
 
 // Categories for search dropdown
 $stmt = $db->query("SELECT id, name, slug FROM `categories` ORDER BY name ASC");
@@ -103,6 +104,18 @@ $headerCategories = $stmt->fetchAll();
             <span>Sign In</span>
           </a>
         <?php endif; ?>
+
+        <!-- Wishlist Action -->
+        <a href="<?= BASE_URL ?>customer/wishlist.php" class="action-item" title="Saved Crafts & Wishlist">
+          <div class="action-icon-wrap">
+            <i class="bi bi-heart"></i>
+            <span class="badge-count wishlist-count-badge"><?= $wishlistCount ?></span>
+          </div>
+          <div class="action-text">
+            <span class="action-subtitle">Saved Crafts</span>
+            <span class="action-title">Wishlist</span>
+          </div>
+        </a>
 
         <!-- Cart Action & Drawer Preview -->
         <?php if (empty($hideCart)): ?>

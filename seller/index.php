@@ -139,7 +139,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_add_product'])
             @mkdir($targetDir, 0777, true);
         }
         $ext = strtolower(pathinfo($_FILES['image_file']['name'], PATHINFO_EXTENSION));
-        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif'])) {
             $fileName = 'prod_' . time() . '_' . rand(100, 999) . '.' . $ext;
             if (move_uploaded_file($_FILES['image_file']['tmp_name'], $targetDir . $fileName)) {
                 $imageUrl = BASE_URL . 'assets/uploads/products/' . $fileName;
@@ -156,7 +156,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_add_product'])
         header('Location: ' . BASE_URL . 'seller/#inventory');
         exit;
     } else {
-        $slug = strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $name)) . '-' . rand(1000, 9999);
+        $cleanSlug = trim(preg_replace('/[^a-zA-Z0-9]+/', '-', strtolower($name)), '-');
+        if (empty($cleanSlug)) {
+            $cleanSlug = 'craft-product';
+        }
+        $slug = $cleanSlug . '-' . rand(1000, 9999);
         $sku = 'HAAT-' . strtoupper(substr(uniqid(), -5));
 
         $ins = $db->prepare("INSERT INTO `products` 

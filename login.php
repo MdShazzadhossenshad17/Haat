@@ -34,6 +34,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['user_role'] = $user['role'];
                 $_SESSION['user_name'] = $user['name'];
 
+                // Sync guest wishlist items to database if any exist
+                if (!empty($_SESSION['wishlist']) && is_array($_SESSION['wishlist'])) {
+                    $wStmt = $db->prepare("INSERT IGNORE INTO `wishlists` (`user_id`, `product_id`) VALUES (?, ?)");
+                    foreach ($_SESSION['wishlist'] as $pId) {
+                        if ((int)$pId > 0) {
+                            $wStmt->execute([$user['id'], (int)$pId]);
+                        }
+                    }
+                    unset($_SESSION['wishlist']);
+                }
+
                 setFlash('success', 'Welcome back, ' . $user['name'] . '!');
 
                 if ($user['role'] === 'admin') {

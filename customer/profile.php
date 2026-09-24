@@ -5,6 +5,22 @@
  */
 require_once __DIR__ . '/../includes/functions.php';
 requireCustomer();
+$user = currentUser();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $name = trim($_POST['name'] ?? '');
+    $phone = trim($_POST['phone'] ?? '');
+
+    if (!empty($name)) {
+        $up = $db->prepare("UPDATE `users` SET `name` = ?, `phone` = ? WHERE `id` = ?");
+        $up->execute([$name, $phone, $user['id']]);
+        $_SESSION['user_name'] = $name;
+        setFlash('success', 'Profile information updated successfully.');
+    }
+    header('Location: ' . BASE_URL . 'customer/#profile');
+    exit;
+}
+
 header('Location: ' . BASE_URL . 'customer/#profile');
 exit;
 require_once __DIR__ . '/../includes/header.php';

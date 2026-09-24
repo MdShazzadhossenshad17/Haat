@@ -180,6 +180,11 @@ require_once __DIR__ . '/includes/header.php';
         <a href="<?= BASE_URL ?>cart.php?action=buy_now&product_id=<?= $product['id'] ?>" class="btn btn-primary btn-lg" onclick="addToCartAndCheckout(event, <?= $product['id'] ?>)">
           <i class="bi bi-lightning-charge-fill"></i> Buy Now
         </a>
+
+        <button type="button" class="btn btn-outline-green btn-lg btn-wishlist-toggle <?= isInWishlist($product['id']) ? 'active' : '' ?>" data-product-id="<?= $product['id'] ?>" title="Save to Wishlist" style="display:inline-flex; align-items:center; gap:8px;">
+          <i class="bi <?= isInWishlist($product['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($product['id']) ? 'style="color:#e63946;"' : '' ?>></i>
+          <span>Wishlist</span>
+        </button>
       </div>
 
       <script>
@@ -301,6 +306,9 @@ require_once __DIR__ . '/includes/header.php';
               <a href="<?= BASE_URL ?>product.php?id=<?= $rel['id'] ?>">
                 <img src="<?= sanitize($rel['featured_image']) ?>" alt="<?= sanitize($rel['name']) ?>">
               </a>
+              <button type="button" class="product-wishlist-btn <?= isInWishlist($rel['id']) ? 'active' : '' ?>" data-product-id="<?= $rel['id'] ?>" title="Save to Wishlist">
+                <i class="bi <?= isInWishlist($rel['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($rel['id']) ? 'style="color:#e63946;"' : '' ?>></i>
+              </button>
             </div>
             <div class="product-body">
               <div class="product-vendor-meta">

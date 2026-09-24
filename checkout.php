@@ -125,6 +125,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 $db->exec("UPDATE `sellers` SET `total_sales` = total_sales + {$itemSub} WHERE `id` = " . (int)$item['seller_id']);
             }
 
+            // Create initial tracking event in database
+            $trStmt = $db->prepare("INSERT INTO `order_tracking_events` 
+                (`order_id`, `order_number`, `title`, `actor`, `location`, `status_key`, `note`, `created_at`) 
+                VALUES (?, ?, 'Order Received & Placed', 'HAAT Marketplace System', ?, 'pending', 'Customer order received and assigned to respective artisan guilds.', NOW())");
+            $trStmt->execute([$orderId, $orderNumber, $district . ', ' . $division]);
+
             $db->commit();
 
             // Clear Cart

@@ -86,6 +86,9 @@ $sellers = $db->query("SELECT s.*,
                 <span class="badge badge-clay">-<?= $discount ?>%</span>
               </div>
             <?php endif; ?>
+            <button type="button" class="product-wishlist-btn <?= isInWishlist($prod['id']) ? 'active' : '' ?>" data-product-id="<?= $prod['id'] ?>" title="Save to Wishlist">
+              <i class="bi <?= isInWishlist($prod['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($prod['id']) ? 'style="color:#e63946;"' : '' ?>></i>
+            </button>
           </div>
 
           <div class="product-body" style="padding: 14px;">
@@ -140,6 +143,9 @@ $sellers = $db->query("SELECT s.*,
                 <span class="badge badge-clay">-<?= $discount ?>%</span>
               </div>
             <?php endif; ?>
+            <button type="button" class="product-wishlist-btn <?= isInWishlist($prod['id']) ? 'active' : '' ?>" data-product-id="<?= $prod['id'] ?>" title="Save to Wishlist">
+              <i class="bi <?= isInWishlist($prod['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($prod['id']) ? 'style="color:#e63946;"' : '' ?>></i>
+            </button>
           </div>
 
           <div class="product-body" style="padding: 14px;">

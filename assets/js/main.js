@@ -58,7 +58,7 @@ function initAddToCartHandlers() {
         formData.append('product_id', productId);
         formData.append('quantity', qty);
 
-        const res = await fetch('api/cart.php', {
+        const res = await fetch((window.HAAT_BASE_URL || '') + 'api/cart.php', {
           method: 'POST',
           body: formData
         });

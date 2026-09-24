@@ -190,7 +190,7 @@ require_once __DIR__ . '/includes/header.php';
           fd.append('action', 'add');
           fd.append('product_id', prodId);
           fd.append('quantity', qty);
-          fetch('api/cart.php', { method: 'POST', body: fd }).then(() => {
+          fetch('<?= BASE_URL ?>api/cart.php', { method: 'POST', body: fd }).then(() => {
             window.location.href = '<?= BASE_URL ?>checkout.php';
           });
         }

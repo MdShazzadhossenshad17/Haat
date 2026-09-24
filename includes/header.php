@@ -23,6 +23,7 @@ $headerCategories = $stmt->fetchAll();
   
   <link rel="stylesheet" href="<?= BASE_URL ?>assets/css/style.css">
   <link rel="icon" type="image/jpeg" href="<?= BASE_URL ?>assets/images/logo.png">
+  <script>window.HAAT_BASE_URL = '<?= BASE_URL ?>';</script>
 </head>
 <body>
 

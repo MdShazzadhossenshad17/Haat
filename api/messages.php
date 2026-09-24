@@ -15,15 +15,20 @@ if (!isLoggedIn()) {
 
 $currentUser = currentUser();
 $currentSeller = currentSeller();
-$action = $_GET['action'] ?? $_POST['action'] ?? 'get';
+
+$rawInput = file_get_contents('php://input');
+$jsonData = json_decode($rawInput, true);
+$payload = is_array($jsonData) ? array_merge($_REQUEST, $jsonData) : $_REQUEST;
+
+$action = $payload['action'] ?? 'get';
 
 // ============================================================
 // 1. GET MESSAGES FOR A CONVERSATION
 // ============================================================
 if ($action === 'get') {
     // A) SELLER-TO-CUSTOMER CONVERSATION VIEW
-    if (isset($_GET['customer_id']) && $currentSeller) {
-        $customerId = (int)$_GET['customer_id'];
+    if (isset($payload['customer_id']) && $currentSeller) {
+        $customerId = (int)$payload['customer_id'];
         $sellerId = (int)$currentSeller['id'];
 
         // Get customer user details
@@ -85,7 +90,7 @@ if ($action === 'get') {
     }
 
     // B) CUSTOMER-TO-SELLER CONVERSATION VIEW (Standard)
-    $sellerId = (int)($_GET['seller_id'] ?? ($currentSeller ? $currentSeller['id'] : 0));
+    $sellerId = (int)($payload['seller_id'] ?? ($currentSeller ? $currentSeller['id'] : 0));
     if (!$sellerId) {
         echo json_encode(['success' => false, 'error' => 'Missing seller ID']);
         exit;
@@ -154,8 +159,8 @@ if ($action === 'get') {
 // 2. SEND MESSAGE
 // ============================================================
 if ($action === 'send') {
-    $text = trim($_POST['message'] ?? '');
-    $orderNumber = trim($_POST['order_number'] ?? '');
+    $text = trim($payload['message'] ?? '');
+    $orderNumber = trim($payload['order_number'] ?? '');
 
     if (empty($text)) {
         echo json_encode(['success' => false, 'error' => 'Message text cannot be empty']);
@@ -170,8 +175,8 @@ if ($action === 'send') {
     }
 
     // A) SELLER SENDING MESSAGE TO CUSTOMER
-    if (isset($_POST['customer_id']) && $currentSeller) {
-        $customerId = (int)$_POST['customer_id'];
+    if (isset($payload['customer_id']) && $currentSeller) {
+        $customerId = (int)$payload['customer_id'];
         if (!$customerId) {
             echo json_encode(['success' => false, 'error' => 'Customer ID required']);
             exit;
@@ -202,7 +207,7 @@ if ($action === 'send') {
     }
 
     // B) CUSTOMER SENDING MESSAGE TO SELLER
-    $sellerId = (int)($_POST['seller_id'] ?? 0);
+    $sellerId = (int)($payload['seller_id'] ?? 0);
     if (!$sellerId) {
         echo json_encode(['success' => false, 'error' => 'Seller ID is required']);
         exit;

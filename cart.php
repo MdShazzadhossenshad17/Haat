@@ -175,7 +175,7 @@ $grandTotal = max(0, $subtotal - $discountAmount + $shipping);
         fd.append('product_id', productId);
         fd.append('quantity', newQty);
 
-        await fetch('api/cart.php', { method: 'POST', body: fd });
+        await fetch('<?= BASE_URL ?>api/cart.php', { method: 'POST', body: fd });
         location.reload();
       }
 
@@ -185,7 +185,7 @@ $grandTotal = max(0, $subtotal - $discountAmount + $shipping);
         fd.append('action', 'remove');
         fd.append('product_id', productId);
 
-        await fetch('api/cart.php', { method: 'POST', body: fd });
+        await fetch('<?= BASE_URL ?>api/cart.php', { method: 'POST', body: fd });
         location.reload();
       }
     </script>

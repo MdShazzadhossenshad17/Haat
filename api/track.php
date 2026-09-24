@@ -6,8 +6,12 @@
 header('Content-Type: application/json');
 require_once __DIR__ . '/../includes/functions.php';
 
-$action = $_GET['action'] ?? $_POST['action'] ?? 'get';
-$orderNumber = trim($_GET['order'] ?? $_POST['order'] ?? '');
+$rawInput = file_get_contents('php://input');
+$jsonData = json_decode($rawInput, true);
+$payload = is_array($jsonData) ? array_merge($_REQUEST, $jsonData) : $_REQUEST;
+
+$action = $payload['action'] ?? 'get';
+$orderNumber = trim($payload['order'] ?? $payload['order_number'] ?? '');
 
 if (empty($orderNumber)) {
     echo json_encode(['success' => false, 'error' => 'Order number is required']);
@@ -94,12 +98,12 @@ if ($action === 'get') {
 
 // 2. LIVE STATUS UPDATE (From Seller, Delivery Partner, or Admin)
 if ($action === 'push_update') {
-    $statusKey = trim($_POST['status_key'] ?? ''); // 'pending', 'processing', 'shipped', 'delivered'
-    $title = trim($_POST['title'] ?? '');
-    $actor = trim($_POST['actor'] ?? 'Delivery Partner');
-    $location = trim($_POST['location'] ?? 'Distribution Center');
-    $note = trim($_POST['note'] ?? '');
-    $courier = trim($_POST['courier_partner'] ?? ($order['courier_partner'] ?? 'Pathao Courier'));
+    $statusKey = trim($payload['status_key'] ?? ''); // 'pending', 'processing', 'shipped', 'delivered'
+    $title = trim($payload['title'] ?? '');
+    $actor = trim($payload['actor'] ?? 'Delivery Partner');
+    $location = trim($payload['location'] ?? 'Distribution Center');
+    $note = trim($payload['note'] ?? '');
+    $courier = trim($payload['courier_partner'] ?? ($order['courier_partner'] ?? 'Pathao Courier'));
 
     if (empty($statusKey) || empty($title)) {
         echo json_encode(['success' => false, 'error' => 'Status and title required']);

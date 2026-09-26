@@ -42,8 +42,9 @@ CREATE TABLE IF NOT EXISTS `sellers` (
     `bank_name` VARCHAR(100) DEFAULT NULL,
     `bank_account_no` VARCHAR(50) DEFAULT NULL,
     `bkash_number` VARCHAR(20) DEFAULT NULL,
-    `commission_rate` DECIMAL(5,2) DEFAULT 5.00,
-    `is_verified` TINYINT(1) DEFAULT 1,
+        `commission_rate` DECIMAL(5,2) DEFAULT 5.00,
+        `is_verified` TINYINT(1) DEFAULT 1,
+        `allow_self_purchase` TINYINT(1) DEFAULT 0,
     `status` ENUM('active', 'pending', 'suspended') DEFAULT 'active',
     `rating` DECIMAL(3,2) DEFAULT 4.80,
     `total_sales` DECIMAL(12,2) DEFAULT 0.00,
@@ -213,7 +214,7 @@ if ($stmt->fetchColumn() == 0) {
     // Seed Sellers Profiles
     $sellerInsert = $pdo->prepare("INSERT INTO `sellers` 
         (`user_id`, `shop_name`, `shop_slug`, `description`, `phone`, `address`, `district`, `division`, `bkash_number`, `is_verified`, `rating`, `total_sales`) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
     $sellerInsert->execute([
         $seller1UserId,
@@ -226,6 +227,7 @@ if ($stmt->fetchColumn() == 0) {
         'Dhaka',
         '01811223344',
         1,
+        0,
         4.95,
         185000.00
     ]);
@@ -242,6 +244,7 @@ if ($stmt->fetchColumn() == 0) {
         'Chittagong',
         '01911334455',
         1,
+        0,
         4.85,
         92000.00
     ]);
@@ -258,6 +261,7 @@ if ($stmt->fetchColumn() == 0) {
         'Khulna',
         '01611445566',
         1,
+        0,
         4.90,
         142000.00
     ]);

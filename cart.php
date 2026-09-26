@@ -3,28 +3,30 @@
  * Shopping Cart Page
  * HAAT Multi-Vendor Marketplace
  */
+require_once __DIR__ . '/includes/functions.php';
+
+// Prevent sellers from accessing buyer cart
+if (isLoggedIn() && isSeller()) {
+    setFlash('warning', 'Seller accounts cannot purchase products or maintain a shopping cart.');
+    header('Location: ' . BASE_URL . 'seller/');
+    exit;
+}
+
 $pageTitle = 'My Haat Cart';
 require_once __DIR__ . '/includes/header.php';
 
-// Handle Coupon application
-$couponCode = $_POST['coupon_code'] ?? $_SESSION['applied_coupon'] ?? '';
-$discountPercent = 0;
-$discountAmount = 0;
-
-if (!empty($couponCode)) {
-    $cStmt = $db->prepare("SELECT * FROM `coupons` WHERE `code` = ? AND `is_active` = 1 LIMIT 1");
-    $cStmt->execute([strtoupper(trim($couponCode))]);
-    $cpn = $cStmt->fetch();
-    if ($cpn) {
-        $discountPercent = (int)$cpn['discount_percent'];
-        $_SESSION['applied_coupon'] = $cpn['code'];
-    }
-}
-
 $cart = getCart();
 $subtotal = getCartSubtotal();
-if ($discountPercent > 0) {
-    $discountAmount = ($subtotal * $discountPercent) / 100;
+$couponCode = $_POST['coupon_code'] ?? $_SESSION['applied_coupon'] ?? '';
+$couponResult = calculateCouponDiscount($couponCode, $subtotal);
+$coupon = $couponResult['coupon'];
+$discountAmount = $couponResult['discount'];
+$couponError = $couponResult['error'];
+if ($coupon) {
+    $couponCode = $coupon['code'];
+    $_SESSION['applied_coupon'] = $couponCode;
+} elseif (isset($_POST['coupon_code'])) {
+    unset($_SESSION['applied_coupon']);
 }
 $shipping = $subtotal > 0 ? ($subtotal >= 3000 ? 0.00 : 80.00) : 0.00;
 $grandTotal = max(0, $subtotal - $discountAmount + $shipping);
@@ -122,9 +124,13 @@ $grandTotal = max(0, $subtotal - $discountAmount + $shipping);
           <button type="submit" class="btn btn-sm btn-outline-green">Apply</button>
         </form>
 
-        <?php if ($discountPercent > 0): ?>
+        <?php if ($coupon): ?>
           <div style="background:#e3efe6; color:var(--haat-green); font-size:0.82rem; padding:8px 12px; border-radius:var(--radius-sm); margin-bottom:16px; font-weight:600;">
-            <i class="bi bi-tag-fill"></i> Coupon <strong><?= sanitize($couponCode) ?></strong> applied (<?= $discountPercent ?>% Discount)!
+            <i class="bi bi-tag-fill"></i> Coupon <strong><?= sanitize($couponCode) ?></strong> applied (<?= (int)$coupon['discount_percent'] ?>% Discount)!
+          </div>
+        <?php elseif ($couponError): ?>
+          <div style="background:#fdeeed; color:#c52828; font-size:0.82rem; padding:8px 12px; border-radius:var(--radius-sm); margin-bottom:16px; font-weight:600;">
+            <i class="bi bi-exclamation-circle-fill"></i> <?= sanitize($couponError) ?>
           </div>
         <?php endif; ?>
 

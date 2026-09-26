@@ -55,8 +55,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
     }
 }
 
-// Fetch all customer orders with order items
-$ordStmt = $db->prepare("SELECT * FROM `orders` WHERE `user_id` = ? ORDER BY id DESC");
+// Fetch all customer orders with item count and delivered date
+$ordStmt = $db->prepare("SELECT o.*, 
+    (SELECT COUNT(*) FROM `order_items` WHERE `order_id` = o.id) as item_count,
+    (SELECT MAX(created_at) FROM `order_tracking_events` WHERE `order_id` = o.id AND `status_key` = 'delivered') as delivered_date
+    FROM `orders` o 
+    WHERE o.`user_id` = ? 
+    ORDER BY o.id DESC");
 $ordStmt->execute([$user['id']]);
 $orders = $ordStmt->fetchAll();
 
@@ -65,31 +70,51 @@ $spentStmt = $db->prepare("SELECT COUNT(*) as total_orders, COALESCE(SUM(grand_t
 $spentStmt->execute([$user['id']]);
 $stats = $spentStmt->fetch();
 
+// Active/pending orders count (orders that are NOT delivered or cancelled)
+$activeOrdStmt = $db->prepare("SELECT COUNT(*) FROM `orders` WHERE `user_id` = ? AND `order_status` NOT IN ('delivered', 'cancelled')");
+$activeOrdStmt->execute([$user['id']]);
+$activeOrdersCount = (int)$activeOrdStmt->fetchColumn();
+
 // Fetch Ordered Products & Sellers for Meta Messenger Live Chat
 $uid = (int)$user['id'];
+$targetSellerId = !empty($_GET['seller_id']) ? (int)$_GET['seller_id'] : 0;
+$sellerWhere = "WHERE s.id IN (SELECT oi.seller_id FROM orders o JOIN order_items oi ON oi.order_id = o.id WHERE o.user_id = {$uid})
+   OR s.id IN (SELECT seller_id FROM messages WHERE sender_id = {$uid} OR receiver_id = {$uid})";
+if ($targetSellerId > 0) {
+    $sellerWhere .= " OR s.id = {$targetSellerId}";
+}
+
 $sellerStmt = $db->query("
-    SELECT oi.id as item_id, oi.order_id, oi.product_id, oi.product_name, oi.price,
-           o.order_number, o.created_at as order_date,
-           s.id as seller_id, s.shop_name, s.shop_logo, s.district,
+    SELECT s.id as seller_id, s.shop_name, s.shop_logo, s.district,
            COALESCE(s.is_online, u.is_online, 0) as is_online,
            u.id as seller_user_id, u.name as artisan_name,
-           p.featured_image,
-           (SELECT message FROM messages WHERE (sender_id = {$uid} AND receiver_id = s.user_id) OR (sender_id = s.user_id AND receiver_id = {$uid}) ORDER BY id DESC LIMIT 1) as last_message,
-           (SELECT created_at FROM messages WHERE (sender_id = {$uid} AND receiver_id = s.user_id) OR (sender_id = s.user_id AND receiver_id = {$uid}) ORDER BY id DESC LIMIT 1) as last_message_time,
-           (SELECT COUNT(*) FROM messages WHERE sender_id = s.user_id AND receiver_id = {$uid} AND is_read = 0) as unread_count
-    FROM order_items oi
-    JOIN orders o ON oi.order_id = o.id
-    JOIN sellers s ON oi.seller_id = s.id
+           (SELECT o.order_number FROM orders o JOIN order_items oi ON oi.order_id = o.id WHERE oi.seller_id = s.id AND o.user_id = {$uid} ORDER BY o.id DESC LIMIT 1) as order_number,
+           (SELECT oi.product_name FROM orders o JOIN order_items oi ON oi.order_id = o.id WHERE oi.seller_id = s.id AND o.user_id = {$uid} ORDER BY o.id DESC LIMIT 1) as product_name,
+           (SELECT p.featured_image FROM orders o JOIN order_items oi ON oi.order_id = o.id LEFT JOIN products p ON oi.product_id = p.id WHERE oi.seller_id = s.id AND o.user_id = {$uid} ORDER BY o.id DESC LIMIT 1) as featured_image,
+           (SELECT message FROM messages WHERE seller_id = s.id AND ((sender_id = {$uid} AND receiver_id = s.user_id) OR (sender_id = s.user_id AND receiver_id = {$uid})) ORDER BY id DESC LIMIT 1) as last_message,
+           (SELECT created_at FROM messages WHERE seller_id = s.id AND ((sender_id = {$uid} AND receiver_id = s.user_id) OR (sender_id = s.user_id AND receiver_id = {$uid})) ORDER BY id DESC LIMIT 1) as last_message_time,
+           (SELECT COUNT(*) FROM messages WHERE seller_id = s.id AND sender_id = s.user_id AND receiver_id = {$uid} AND is_read = 0) as unread_count
+    FROM sellers s
     JOIN users u ON s.user_id = u.id
-    LEFT JOIN products p ON oi.product_id = p.id
-    WHERE o.user_id = {$uid}
-    GROUP BY s.id, oi.product_id
-    ORDER BY (last_message_time IS NOT NULL) DESC, last_message_time DESC, oi.id DESC
+    {$sellerWhere}
+    ORDER BY " . ($targetSellerId > 0 ? "(s.id = {$targetSellerId}) DESC, " : "") . "(last_message_time IS NOT NULL) DESC, last_message_time DESC, s.id ASC
 ");
 $orderedProducts = ($sellerStmt) ? $sellerStmt->fetchAll() : [];
 $orderedSellers = is_array($orderedProducts) ? $orderedProducts : [];
 
-// Total unread messages across all sellers
+// Fetch Logistics Conversation Metadata for Customer
+$logisticsUser = $db->query("SELECT id, name, email, phone, avatar, COALESCE(is_online, 1) as is_online FROM `users` WHERE `role` = 'logistics' LIMIT 1")->fetch();
+$logisticsId = $logisticsUser ? (int)$logisticsUser['id'] : 1;
+
+$logMsgStmt = $db->prepare("SELECT message, created_at FROM `messages` WHERE (seller_id IS NULL OR seller_id = 0) AND (sender_id = ? OR receiver_id = ?) ORDER BY id DESC LIMIT 1");
+$logMsgStmt->execute([$uid, $uid]);
+$lastLogMsg = $logMsgStmt->fetch();
+
+$logUnreadStmt = $db->prepare("SELECT COUNT(*) FROM `messages` WHERE (seller_id IS NULL OR seller_id = 0) AND receiver_id = ? AND is_read = 0");
+$logUnreadStmt->execute([$uid]);
+$logisticsUnreadCount = (int)$logUnreadStmt->fetchColumn();
+
+// Total unread messages across all sellers and logistics
 $unreadTotalStmt = $db->prepare("SELECT COUNT(*) FROM `messages` WHERE `receiver_id` = ? AND `is_read` = 0");
 $unreadTotalStmt->execute([$user['id']]);
 $totalUnreadMessages = (int)$unreadTotalStmt->fetchColumn();
@@ -97,6 +122,9 @@ $totalUnreadMessages = (int)$unreadTotalStmt->fetchColumn();
 // Customer Saved Wishlist
 $wishlistProducts = getUserWishlistProducts($user['id']);
 $wishlistCount = count($wishlistProducts);
+
+// Customer Notifications for Live Tracking & Order Updates
+$recentCustomerNotifs = getUserNotifications($user['id'], 6);
 
 $pageTitle = 'Buyer Dashboard — HAAT';
 require_once __DIR__ . '/../includes/header.php';
@@ -117,46 +145,57 @@ require_once __DIR__ . '/../includes/header.php';
     <!-- PERSISTENT LEFT SIDEBAR -->
     <aside style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-sm); position:sticky; top:20px;">
       
-      <!-- Customer Name Rectangular Box -->
-      <div style="background:#f9fafb; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:14px 16px; margin-bottom:18px; text-align:center;">
-        <div style="color:var(--haat-green-dark); font-size:1.05rem; font-weight:700;">
-          <?= sanitize($user['name']) ?>
+      <!-- IMPROVED PREMIUM CUSTOMER BRAND CARD -->
+      <div style="background:linear-gradient(180deg, #ffffff 0%, #faf8f5 100%); border:1px solid rgba(27,61,34,0.14); border-radius:12px; padding:16px; margin-bottom:20px; box-shadow:0 3px 12px rgba(0,0,0,0.04); position:relative; overflow:hidden;">
+        <!-- Top decorative brand stripe -->
+        <div style="position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg, var(--haat-green), var(--haat-clay));"></div>
+        
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+          <div style="width:40px; height:40px; border-radius:10px; background:linear-gradient(135deg, var(--haat-green-dark), var(--haat-green)); color:#fff; display:flex; align-items:center; justify-content:center; font-size:1.15rem; font-weight:700; flex-shrink:0; box-shadow:0 2px 6px rgba(27,61,34,0.2);">
+            <?= strtoupper(substr($user['name'] ?? 'U', 0, 1)) ?>
+          </div>
+          <div style="min-width:0; flex:1;">
+            <div style="color:var(--haat-green-dark); font-size:0.98rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="<?= sanitize($user['name']) ?>">
+              <?= sanitize($user['name']) ?>
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+              <?= sanitize($user['email']) ?>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- Unified Sidebar Navigation Tabs -->
       <ul class="dashboard-nav" style="display:flex; flex-direction:column; gap:6px; list-style:none; padding:0; margin:0; font-size:0.92rem; font-weight:600;">
         <li>
-          <a href="#overview" class="dash-tab-link active" data-tab="overview">
+          <a href="#overview" class="dash-tab-link active" data-tab="overview" onclick="switchTab('overview')">
             <i class="bi bi-speedometer2"></i>
             <span>Overview</span>
-          </a>
+            </a>
         </li>
         <li>
-          <a href="#orders" class="dash-tab-link" data-tab="orders">
+          <a href="#orders" class="dash-tab-link" data-tab="orders" onclick="switchTab('orders')">
             <i class="bi bi-bag-check"></i>
             <span>My Orders</span>
-            <span class="badge" style="background:#eef4ee; color:var(--haat-green); font-size:0.75rem; padding:2px 8px; border-radius:12px; margin-left:auto;"><?= $stats['total_orders'] ?></span>
+            <span class="badge orders-count-badge" style="background:var(--haat-sand); color:var(--haat-green-dark); font-weight:700; font-size:0.75rem; padding:2px 8px; border-radius:12px; margin-left:auto; border:1px solid rgba(27,61,34,0.1); <?= $activeOrdersCount > 0 ? '' : 'display:none;' ?>"><?= $activeOrdersCount ?></span>
           </a>
         </li>
         <li>
-          <a href="#messages" class="dash-tab-link" data-tab="messages">
+          <a href="#messages" class="dash-tab-link" data-tab="messages" onclick="switchTab('messages')">
             <i class="bi bi-chat-dots-fill"></i>
             <span>Seller Messages</span>
-            <?php if ($totalUnreadMessages > 0): ?>
-              <span class="badge" style="background:var(--haat-clay); color:#fff; font-size:0.72rem; padding:2px 8px; border-radius:12px; margin-left:auto;"><?= $totalUnreadMessages ?> new</span>
-            <?php endif; ?>
+            <span id="cust-nav-msg-badge" class="badge" style="background:var(--haat-clay); color:#fff; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:12px; margin-left:auto; <?= $totalUnreadMessages > 0 ? '' : 'display:none;' ?>"><?= $totalUnreadMessages ?></span>
           </a>
         </li>
         <li>
-          <a href="#wishlist" class="dash-tab-link" data-tab="wishlist">
+          <a href="#wishlist" class="dash-tab-link" data-tab="wishlist" onclick="switchTab('wishlist')">
             <i class="bi bi-heart"></i>
             <span>Saved Wishlist</span>
-            <span class="badge wishlist-count-badge" style="background:#fde8e8; color:#e63946; font-size:0.75rem; padding:2px 8px; border-radius:12px; margin-left:auto;"><?= $wishlistCount ?></span>
+            <span class="badge wishlist-count-badge" style="font-weight:700; font-size:0.75rem; padding:2px 8px; border-radius:12px; margin-left:auto; <?= $wishlistCount > 0 ? '' : 'display:none;' ?>"><?= $wishlistCount ?></span>
           </a>
         </li>
         <li>
-          <a href="#profile" class="dash-tab-link" data-tab="profile">
+          <a href="#profile" class="dash-tab-link" data-tab="profile" onclick="switchTab('profile')">
             <i class="bi bi-person-gear"></i>
             <span>Account Profile</span>
           </a>
@@ -194,12 +233,79 @@ require_once __DIR__ . '/../includes/header.php';
 
           <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm); cursor:pointer;" onclick="switchTab('wishlist')">
             <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Saved Wishlist</div>
-            <div style="font-size:1.7rem; font-weight:800; color:#e63946; display:flex; align-items:center; gap:8px;">
+            <div style="font-size:1.7rem; font-weight:800; color:var(--haat-clay); display:flex; align-items:center; gap:8px;">
               <span class="wishlist-count-badge"><?= $wishlistCount ?></span>
               <span style="font-size:0.72rem; font-weight:600; color:var(--text-muted);">Crafts</span>
             </div>
           </div>
         </div>
+
+        <?php if (!empty($recentCustomerNotifs)): ?>
+        <!-- Live Order Tracking Alerts Card (Visible during Order Confirmation & Crafting before Shipped) -->
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm); margin-bottom:24px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:38px; height:38px; border-radius:10px; background:var(--haat-sand); color:var(--haat-clay); display:flex; align-items:center; justify-content:center; font-size:1.2rem;">
+                <i class="bi bi-broadcast"></i>
+              </div>
+              <div>
+                <h3 style="font-size:1.15rem; color:var(--haat-green-dark); margin:0;">Live Order Tracking Alerts</h3>
+                <p style="font-size:0.8rem; color:var(--text-muted); margin:2px 0 0;">Real-time workshop crafting and fulfillment updates</p>
+              </div>
+            </div>
+            <button type="button" onclick="switchTab('orders')" style="background:none; border:none; color:var(--haat-clay); font-size:0.85rem; font-weight:700; cursor:pointer;">
+              Track All Orders &rarr;
+            </button>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <?php foreach ($recentCustomerNotifs as $cn): 
+              $iconClass = 'bi-bell-fill';
+              $iconBg = 'var(--haat-sand)';
+              $iconColor = 'var(--haat-green-dark)';
+              if (strpos($cn['type'], 'confirmed') !== false || strpos($cn['type'], 'order_placed') !== false) {
+                  $iconClass = 'bi-box-seam-fill';
+                  $iconBg = '#e8efe9';
+                  $iconColor = 'var(--haat-green)';
+              } elseif (strpos($cn['type'], 'processing') !== false) {
+                  $iconClass = 'bi-gear-wide-connected';
+                  $iconBg = 'var(--haat-clay-light)';
+                  $iconColor = 'var(--haat-clay)';
+              } elseif (strpos($cn['type'], 'shipped') !== false || strpos($cn['type'], 'dispatched') !== false) {
+                  $iconClass = 'bi-truck';
+                  $iconBg = '#fbf0e4';
+                  $iconColor = '#b45309';
+              } elseif (strpos($cn['type'], 'delivered') !== false) {
+                  $iconClass = 'bi-check2-circle';
+                  $iconBg = '#e2ede5';
+                  $iconColor = 'var(--haat-green)';
+              } elseif (strpos($cn['type'], 'message') !== false) {
+                  $iconClass = 'bi-chat-dots-fill';
+                  $iconBg = 'var(--haat-clay-light)';
+                  $iconColor = 'var(--haat-clay)';
+              }
+            ?>
+              <div style="display:flex; align-items:flex-start; gap:14px; padding:12px 16px; border-radius:10px; background:#faf8f5; border:1px solid rgba(0,0,0,0.04);">
+                <div style="width:36px; height:36px; border-radius:8px; background:<?= $iconBg ?>; color:<?= $iconColor ?>; display:flex; align-items:center; justify-content:center; font-size:1.1rem; flex-shrink:0; margin-top:2px;">
+                  <i class="bi <?= $iconClass ?>"></i>
+                </div>
+                <div style="flex:1; min-width:0;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px; flex-wrap:wrap; gap:4px;">
+                    <span style="font-weight:700; color:var(--haat-green-dark); font-size:0.9rem;"><?= sanitize($cn['title']) ?></span>
+                    <span style="font-size:0.75rem; color:var(--text-muted);"><?= date('d M, h:i A', strtotime($cn['created_at'])) ?></span>
+                  </div>
+                  <p style="margin:0 0 6px; font-size:0.83rem; color:var(--text-main); line-height:1.4;"><?= sanitize($cn['message']) ?></p>
+                  <?php if (!empty($cn['link'])): ?>
+                    <a href="<?= sanitize($cn['link']) ?>" style="font-size:0.78rem; font-weight:700; color:var(--haat-clay); text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                      <span>View Live Status & Timeline</span> &rarr;
+                    </a>
+                  <?php endif; ?>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </div>
+        </div>
+        <?php endif; ?>
 
         <!-- Recent Orders Section -->
         <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm); margin-bottom:24px;">
@@ -248,12 +354,12 @@ require_once __DIR__ . '/../includes/header.php';
                     </td>
                     <td style="padding:14px 0;">
                       <span class="badge badge-<?= $ord['order_status'] === 'delivered' ? 'green' : 'gold' ?>" style="font-size:0.75rem;">
-                        <?= ucfirst($ord['order_status']) ?>
+                        <?= $ord['order_status'] === 'delivered' ? '<i class="bi bi-check2-circle"></i> Completed' : ucfirst($ord['order_status']) ?>
                       </span>
                     </td>
                     <td style="padding:14px 0; text-align:right;">
-                      <a href="<?= BASE_URL ?>order-confirmation.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.8rem;">
-                        Invoice
+                      <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.8rem;">
+                        <i class="bi bi-printer"></i> Invoice
                       </a>
                       <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-clay" style="padding:4px 10px; font-size:0.8rem; margin-left:4px;">
                         Track
@@ -269,104 +375,273 @@ require_once __DIR__ . '/../includes/header.php';
       </div>
 
       <!-- ==========================================
-           TAB 2: MY ORDERS PANEL
+           TAB 2: MY ORDERS PANEL (Clean Table with Expandable Details)
            ========================================== -->
       <div id="tab-orders" class="dash-panel" style="display:none;">
         <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm);">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
             <div>
               <h2 style="font-size:1.35rem; color:var(--haat-green-dark); margin:0;">Complete Order History</h2>
-              <p style="font-size:0.85rem; color:var(--text-muted); margin:3px 0 0;">Review itemized orders, track deliveries, and print invoices</p>
+              <p style="font-size:0.85rem; color:var(--text-muted); margin:3px 0 0;">Click on any order row to see received details, full tracking timeline, and invoice downloads.</p>
             </div>
             <span class="badge badge-green"><?= count($orders) ?> Total Orders</span>
           </div>
 
           <?php if (empty($orders)): ?>
-            <div style="text-align:center; padding:40px 0;">
+            <div style="text-align:center; padding:50px 0;">
               <i class="bi bi-bag-x text-muted" style="font-size:3rem; display:block; margin-bottom:12px;"></i>
-              <h3>No Orders Placed Yet</h3>
+              <h3 style="margin-bottom:8px;">No Orders Placed Yet</h3>
+              <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">Explore authentic handloom sarees, pottery, and pure village harvests.</p>
               <a href="<?= BASE_URL ?>shop.php" class="btn btn-clay btn-sm">Explore Haat Crafts</a>
             </div>
           <?php else: ?>
-            <div style="display:flex; flex-direction:column; gap:20px;">
-              <?php foreach ($orders as $ord): 
-                // Fetch items for this order
-                $itemStmt = $db->prepare("SELECT oi.*, s.id as seller_id, s.shop_name, p.featured_image 
-                    FROM `order_items` oi 
-                    JOIN `sellers` s ON oi.seller_id = s.id 
-                    LEFT JOIN `products` p ON oi.product_id = p.id 
-                    WHERE oi.order_id = ?");
-                $itemStmt->execute([$ord['id']]);
-                $orderItems = $itemStmt->fetchAll();
-              ?>
-                <div style="border:1px solid var(--haat-border); border-radius:var(--radius-md); overflow:hidden;">
-                  
-                  <!-- Order Card Header -->
-                  <div style="background:#faf7f2; padding:14px 20px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-                    <div>
-                      <strong style="color:var(--haat-green-dark); font-size:1rem;"><?= sanitize($ord['order_number']) ?></strong>
-                      <span style="font-size:0.8rem; color:var(--text-muted); margin-left:10px;">Placed on <?= date('d M Y, h:i A', strtotime($ord['created_at'])) ?></span>
-                    </div>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                      <span class="badge badge-<?= $ord['order_status'] === 'delivered' ? 'green' : 'gold' ?>">
-                        <?= strtoupper($ord['order_status']) ?>
-                      </span>
-                      <a href="<?= BASE_URL ?>order-confirmation.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.8rem;">
-                        <i class="bi bi-receipt"></i> Invoice
-                      </a>
-                      <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-clay" style="padding:4px 10px; font-size:0.8rem;">
-                        <i class="bi bi-truck"></i> Track
-                      </a>
-                    </div>
-                  </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+                <thead>
+                  <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.8rem; text-transform:uppercase; background:#faf7f2;">
+                    <th style="padding:12px 14px; border-top-left-radius:6px;">Order #</th>
+                    <th style="padding:12px 14px;">Date Placed</th>
+                    <th style="padding:12px 14px;">Items</th>
+                    <th style="padding:12px 14px;">Total Amount</th>
+                    <th style="padding:12px 14px;">Payment</th>
+                    <th style="padding:12px 14px;">Order Status</th>
+                    <th style="padding:12px 14px; text-align:right; border-top-right-radius:6px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($orders as $ord): 
+                    // Fetch items for this order
+                    $itemStmt = $db->prepare("SELECT oi.*, s.id as seller_id, s.shop_name, p.featured_image 
+                        FROM `order_items` oi 
+                        JOIN `sellers` s ON oi.seller_id = s.id 
+                        LEFT JOIN `products` p ON oi.product_id = p.id 
+                        WHERE oi.order_id = ?");
+                    $itemStmt->execute([$ord['id']]);
+                    $orderItems = $itemStmt->fetchAll();
 
-                  <!-- Order Card Body & Items -->
-                  <div style="padding:16px 20px;">
-                    <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:14px;">
-                      <?php foreach ($orderItems as $it): ?>
-                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px dashed var(--haat-border); padding-bottom:10px;">
-                          <div style="display:flex; align-items:center; gap:12px;">
-                            <?php if (!empty($it['featured_image'])): ?>
-                              <img src="<?= sanitize($it['featured_image']) ?>" alt="thumb" style="width:48px; height:48px; border-radius:var(--radius-sm); object-fit:cover; border:1px solid var(--haat-border);">
-                            <?php else: ?>
-                              <div style="width:48px; height:48px; border-radius:var(--radius-sm); background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-clay);">
-                                <i class="bi bi-box"></i>
-                              </div>
-                            <?php endif; ?>
-                            <div>
-                              <strong style="font-size:0.92rem; color:var(--text-main); display:block;"><?= sanitize($it['product_name']) ?></strong>
-                              <span style="font-size:0.8rem; color:var(--text-muted);">
-                                Workshop: <strong style="color:var(--haat-clay);"><?= sanitize($it['shop_name']) ?></strong> • Qty: <?= $it['quantity'] ?>
-                              </span>
-                            </div>
-                          </div>
+                    $isDelivered = ($ord['order_status'] === 'delivered');
+                    $isShipped = ($ord['order_status'] === 'shipped');
+                    $isProcessing = ($ord['order_status'] === 'processing');
+                    $isPending = ($ord['order_status'] === 'pending');
+                    $isCancelled = ($ord['order_status'] === 'cancelled');
 
-                          <div style="text-align:right;">
-                            <span style="font-size:0.95rem; font-weight:700; color:var(--haat-green);"><?= formatPrice($it['price'] * $it['quantity']) ?></span>
-                            <div style="margin-top:4px;">
-                              <button type="button" onclick="openChatWithSeller(<?= $it['seller_id'] ?>, '<?= sanitize($ord['order_number']) ?>', '<?= addslashes(sanitize($it['product_name'])) ?>')" class="btn btn-sm btn-outline-clay" style="padding:2px 8px; font-size:0.75rem;">
-                                <i class="bi bi-chat-dots"></i> Message Seller
-                              </button>
-                            </div>
-                          </div>
+                    $statusBadgeClass = 'badge-clay';
+                    $statusLabel = 'Confirmed';
+                    if ($isDelivered) {
+                        $statusBadgeClass = 'badge-green';
+                        $statusLabel = '<i class="bi bi-check2-circle"></i> Completed';
+                    } elseif ($isShipped) {
+                        $statusBadgeClass = 'badge-gold';
+                        $statusLabel = '<i class="bi bi-truck"></i> Shipped';
+                    } elseif ($isProcessing) {
+                        $statusBadgeClass = 'badge-clay';
+                        $statusLabel = '<i class="bi bi-gear-wide-connected"></i> Crafting';
+                    } elseif ($isCancelled) {
+                        $statusBadgeClass = 'badge-danger';
+                        $statusLabel = '<i class="bi bi-x-circle"></i> Cancelled';
+                    }
+                  ?>
+                    <!-- Main Order Summary Row (Clickable) -->
+                    <tr style="border-bottom:1px solid var(--haat-border); cursor:pointer; transition:background 0.15s ease;" 
+                        onmouseover="this.style.background='#faf8f5';" 
+                        onmouseout="this.style.background='#ffffff';"
+                        onclick="toggleOrderRowDetails(<?= (int)$ord['id'] ?>)">
+                      <td style="padding:14px; font-weight:700; color:var(--haat-green-dark); white-space:nowrap;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <i class="bi bi-chevron-right text-clay" id="order-chevron-<?= $ord['id'] ?>" style="transition:transform 0.2s ease; font-size:0.8rem;"></i>
+                          <span><?= sanitize($ord['order_number']) ?></span>
                         </div>
-                      <?php endforeach; ?>
-                    </div>
+                      </td>
+                      <td style="padding:14px; color:var(--text-muted); font-size:0.85rem; white-space:nowrap;">
+                        <?= date('d M Y, h:i A', strtotime($ord['created_at'])) ?>
+                      </td>
+                      <td style="padding:14px; color:var(--text-main); font-size:0.88rem; white-space:nowrap;">
+                        <span class="badge badge-green" style="background:#f0fdf4; color:#166534; border:1px solid #bbf7d0; font-size:0.75rem;">
+                          <?= count($orderItems) ?> <?= count($orderItems) === 1 ? 'Craft' : 'Crafts' ?>
+                        </span>
+                      </td>
+                      <td style="padding:14px; font-weight:800; color:var(--haat-green); font-size:0.95rem; white-space:nowrap;">
+                        <?= formatPrice($ord['grand_total']) ?>
+                      </td>
+                      <td style="padding:14px; white-space:nowrap;">
+                        <span class="pay-badge pay-<?= $ord['payment_method'] ?>" style="font-size:0.75rem;">
+                          <?= strtoupper($ord['payment_method']) ?>
+                        </span>
+                      </td>
+                      <td style="padding:14px; white-space:nowrap;">
+                        <span class="badge <?= $statusBadgeClass ?>" style="font-size:0.78rem; padding:4px 10px; font-weight:700;">
+                          <?= $statusLabel ?>
+                        </span>
+                      </td>
+                      <td style="padding:14px; text-align:right; white-space:nowrap;" onclick="event.stopPropagation();">
+                        <button type="button" class="btn btn-sm btn-outline-clay" onclick="toggleOrderRowDetails(<?= (int)$ord['id'] ?>)" style="padding:3px 8px; font-size:0.78rem;">
+                          <i class="bi bi-eye"></i> Details
+                        </button>
+                        <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:3px 8px; font-size:0.78rem; margin-left:3px;" title="Print / Download Tax Invoice">
+                          <i class="bi bi-printer"></i> Invoice
+                        </a>
+                        <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-clay" style="padding:3px 8px; font-size:0.78rem; margin-left:3px;" title="Live Courier Tracking">
+                          <i class="bi bi-truck"></i> Track
+                        </a>
+                      </td>
+                    </tr>
 
-                    <!-- Order Card Summary Footer -->
-                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; color:var(--text-muted); padding-top:6px;">
-                      <div>
-                        Delivery: <strong><?= sanitize($ord['shipping_address']) ?>, <?= sanitize($ord['district']) ?></strong> (Phone: <?= sanitize($ord['shipping_phone']) ?>)
-                      </div>
-                      <div style="font-size:1rem; font-weight:800; color:var(--haat-green-dark);">
-                        Grand Total: <?= formatPrice($ord['grand_total']) ?>
-                      </div>
-                    </div>
-                  </div>
+                    <!-- Expandable Order Full Details Row -->
+                    <tr id="order-details-drawer-<?= $ord['id'] ?>" style="display:none; background:#fcfbf9; border-bottom:2px solid var(--haat-border);">
+                      <td colspan="7" style="padding:18px 22px;">
+                        <div style="background:#ffffff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:0 2px 8px rgba(0,0,0,0.03);">
+                          
+                          <!-- Order Status / Delivered Banner -->
+                          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; padding-bottom:14px; border-bottom:1px solid var(--haat-border); margin-bottom:16px;">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                              <div style="width:36px; height:36px; border-radius:8px; background:<?= $isDelivered ? '#e8f5e9' : 'var(--haat-sand)' ?>; color:<?= $isDelivered ? 'var(--haat-green)' : 'var(--haat-clay)' ?>; display:flex; align-items:center; justify-content:center; font-size:1.15rem;">
+                                <i class="bi <?= $isDelivered ? 'bi-check-circle-fill' : 'bi-truck' ?>"></i>
+                              </div>
+                              <div>
+                                <strong style="color:var(--haat-green-dark); font-size:0.92rem;">
+                                  <?= $isDelivered ? 'Order Received & Completed' : 'Order in Progress (' . ucfirst($ord['order_status']) . ')' ?>
+                                </strong>
+                                <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
+                                  <?php if ($isDelivered && !empty($ord['delivered_date'])): ?>
+                                    Delivered on: <strong><?= date('d M Y, h:i A', strtotime($ord['delivered_date'])) ?></strong>
+                                  <?php else: ?>
+                                    Order Number: <strong><?= sanitize($ord['order_number']) ?></strong> • Placed on <?= date('d M Y, h:i A', strtotime($ord['created_at'])) ?>
+                                  <?php endif; ?>
+                                </div>
+                              </div>
+                            </div>
 
-                </div>
-              <?php endforeach; ?>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                              <button type="button" onclick="openChatWithLogistics('<?= sanitize($ord['order_number']) ?>')" class="btn btn-sm btn-clay" style="font-size:0.8rem; display:inline-flex; align-items:center; gap:5px;">
+                                <i class="bi bi-chat-dots-fill"></i> Message HAATEX Logistics
+                              </button>
+                              <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="font-size:0.8rem; display:inline-flex; align-items:center; gap:5px;">
+                                <i class="bi bi-file-earmark-pdf"></i> Download Invoice
+                              </a>
+                              <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ord['order_number']) ?>" class="btn btn-sm btn-outline-clay" style="font-size:0.8rem; display:inline-flex; align-items:center; gap:5px;">
+                                <i class="bi bi-geo-alt-fill"></i> Live Tracking
+                              </a>
+                            </div>
+                          </div>
+
+                          <!-- HAATEX Logistics Consignment Info Box -->
+                          <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:8px; padding:10px 14px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; font-size:0.82rem;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                              <span style="font-weight:700; color:var(--haat-clay); display:flex; align-items:center; gap:5px;">
+                                <i class="bi bi-truck"></i> HAATEX Express:
+                              </span>
+                              <code style="background:#fff; border:1px solid #cbd5e1; padding:2px 7px; border-radius:4px; font-weight:700; color:var(--haat-green-dark);">
+                                <?= sanitize($ord['tracking_code'] ?: 'HTX-' . $ord['id']) ?>
+                              </code>
+                              <?php if (!empty($ord['assigned_rider_name'])): ?>
+                                <span style="color:var(--haat-green); font-weight:600;">
+                                  • Delivery Rider: <strong><?= sanitize($ord['assigned_rider_name']) ?></strong> (<?= sanitize($ord['assigned_rider_phone'] ?? '') ?>)
+                                </span>
+                              <?php endif; ?>
+                            </div>
+
+                            <span class="badge" style="background:var(--haat-sand); color:var(--haat-green-dark); font-weight:700; font-size:0.75rem;">
+                              <?= !empty($ord['logistics_status']) ? ucwords(str_replace('_', ' ', $ord['logistics_status'])) : 'Pending Dispatch' ?>
+                            </span>
+                          </div>
+
+                          <!-- Itemized Products List -->
+                          <div style="margin-bottom:16px;">
+                            <div style="font-size:0.82rem; font-weight:700; color:var(--haat-green-dark); text-transform:uppercase; margin-bottom:10px;">
+                              Ordered Craft Items (<?= count($orderItems) ?>)
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:10px;">
+                              <?php foreach ($orderItems as $it): ?>
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#fdfbf8; border:1px solid var(--haat-border); border-radius:var(--radius-sm); flex-wrap:wrap; gap:10px;">
+                                  <div style="display:flex; align-items:center; gap:12px;">
+                                    <?php if (!empty($it['featured_image'])): ?>
+                                      <img src="<?= sanitize($it['featured_image']) ?>" alt="thumb" style="width:44px; height:44px; border-radius:var(--radius-sm); object-fit:cover; border:1px solid var(--haat-border);">
+                                    <?php else: ?>
+                                      <div style="width:44px; height:44px; border-radius:var(--radius-sm); background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-clay);">
+                                        <i class="bi bi-box"></i>
+                                      </div>
+                                    <?php endif; ?>
+                                    <div>
+                                      <a href="<?= BASE_URL ?>product.php?id=<?= $it['product_id'] ?>" style="font-size:0.9rem; font-weight:700; color:var(--haat-green-dark); text-decoration:none;">
+                                        <?= sanitize($it['product_name']) ?>
+                                      </a>
+                                      <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
+                                        Artisan Workshop: <strong style="color:var(--haat-clay);"><?= sanitize($it['shop_name']) ?></strong> • Qty: <?= $it['quantity'] ?> × <?= formatPrice($it['price']) ?>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div style="display:flex; align-items:center; gap:12px;">
+                                    <span style="font-size:0.95rem; font-weight:800; color:var(--haat-green);">
+                                      <?= formatPrice($it['price'] * $it['quantity']) ?>
+                                    </span>
+                                    <div style="display:flex; gap:5px;">
+                                      <?php if (!empty($it['product_id'])): ?>
+                                        <a href="<?= BASE_URL ?>product.php?id=<?= $it['product_id'] ?>#reviews" class="btn btn-sm btn-outline-green" style="padding:3px 9px; font-size:0.75rem; display:inline-flex; align-items:center; gap:4px;">
+                                          <i class="bi bi-star-fill text-gold"></i> Rate / Review
+                                        </a>
+                                      <?php endif; ?>
+                                      <button type="button" onclick="openChatWithSeller(<?= $it['seller_id'] ?>, '<?= sanitize($ord['order_number']) ?>', '<?= addslashes(sanitize($it['product_name'])) ?>')" class="btn btn-sm btn-outline-clay" style="padding:3px 9px; font-size:0.75rem; display:inline-flex; align-items:center; gap:4px;">
+                                        <i class="bi bi-chat-dots"></i> Message Seller
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              <?php endforeach; ?>
+                            </div>
+                          </div>
+
+                          <!-- Delivery Address & Financial Breakdown -->
+                          <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:16px; padding-top:12px; border-top:1px dashed var(--haat-border); font-size:0.83rem;">
+                            <div>
+                              <div style="font-weight:700; color:var(--haat-green-dark); margin-bottom:3px;">Recipient & Delivery Address:</div>
+                              <div style="color:var(--text-muted); line-height:1.4;">
+                                <strong><?= sanitize($ord['shipping_name']) ?></strong> (Phone: <?= sanitize($ord['shipping_phone']) ?>)<br>
+                                <?= sanitize($ord['shipping_address']) ?>, <?= sanitize($ord['district']) ?>, <?= sanitize($ord['division']) ?>
+                              </div>
+                            </div>
+                            <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:6px; padding:10px 14px;">
+                              <div style="display:flex; justify-content:space-between; margin-bottom:4px; color:var(--text-muted);">
+                                <span>Subtotal:</span>
+                                <span><?= formatPrice($ord['total_amount']) ?></span>
+                              </div>
+                              <?php if ($ord['discount_amount'] > 0): ?>
+                              <div style="display:flex; justify-content:space-between; margin-bottom:4px; color:var(--haat-clay);">
+                                <span>Coupon Savings:</span>
+                                <span>- <?= formatPrice($ord['discount_amount']) ?></span>
+                              </div>
+                              <?php endif; ?>
+                              <div style="display:flex; justify-content:space-between; margin-bottom:6px; color:var(--text-muted);">
+                                <span>Delivery Courier:</span>
+                                <span><?= $ord['shipping_cost'] > 0 ? formatPrice($ord['shipping_cost']) : 'FREE' ?></span>
+                              </div>
+                              <div style="display:flex; justify-content:space-between; font-weight:800; font-size:0.95rem; color:var(--haat-green-dark); border-top:1px solid var(--haat-border); padding-top:6px;">
+                                <span>Grand Total:</span>
+                                <span><?= formatPrice($ord['grand_total']) ?></span>
+                              </div>
+                            </div>
+                          </div>
+
+                        </div>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
             </div>
+
+            <script>
+              function toggleOrderRowDetails(orderId) {
+                const drawer = document.getElementById('order-details-drawer-' + orderId);
+                const chevron = document.getElementById('order-chevron-' + orderId);
+                if (!drawer) return;
+                const isHidden = (drawer.style.display === 'none' || !drawer.style.display);
+                drawer.style.display = isHidden ? 'table-row' : 'none';
+                if (chevron) {
+                  chevron.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+                }
+              }
+            </script>
           <?php endif; ?>
         </div>
       </div>
@@ -378,69 +653,119 @@ require_once __DIR__ . '/../includes/header.php';
         <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); box-shadow:var(--shadow-sm); overflow:hidden;">
           
           <!-- Messenger Component Container -->
-          <div style="display:grid; grid-template-columns: 330px 1fr; height: 580px;">
+          <div style="display:grid; grid-template-columns: 340px 1fr; height: 600px; max-height:600px;">
             
             <!-- Left Pane: Conversations / Ordered Products & Sellers -->
-            <div style="border-right:1px solid var(--haat-border); display:flex; flex-direction:column; background:#faf7f2;">
+            <div style="border-right:1px solid var(--haat-border); display:flex; flex-direction:column; height:600px; min-height:0; max-height:600px; background:#faf7f2; overflow:hidden;">
               
-              <div style="padding:16px 18px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center;">
-                <h3 style="font-size:1.02rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
-                  <i class="bi bi-chat-left-dots text-clay"></i> Ordered Products & Sellers
+              <div style="padding:14px 18px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; flex-shrink:0; background:#fff;">
+                <h3 style="font-size:0.95rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px; font-weight:800;">
+                  <i class="bi bi-chat-left-dots text-clay"></i> Messages & Support Desk
                 </h3>
               </div>
 
               <!-- Conversation List -->
-              <div id="conversation-list" style="flex:1; overflow-y:auto; padding:6px 0;">
+              <div id="conversation-list" style="flex:1 1 0%; min-height:0; overflow-y:auto; padding:6px 0;">
+                
+                <!-- 1. Dedicated HAATEX Logistics Delivery Partner Channel -->
+                <div class="conv-item conv-logistics" 
+                     id="conv-item-logistics"
+                     onclick="selectLogisticsConversation()" 
+                     style="padding:12px 14px; border-bottom:1px solid rgba(0,0,0,0.06); cursor:pointer; display:flex; gap:12px; align-items:center; transition:var(--transition); background:transparent;">
+                  
+                  <!-- Logistics Avatar with Active Dot -->
+                  <div style="position:relative; flex-shrink:0;">
+                    <div style="width:44px; height:44px; border-radius:50%; background:linear-gradient(135deg, #1b3d22 0%, #2d5a36 100%); color:#fff; display:flex; align-items:center; justify-content:center; font-size:1.3rem; box-shadow:0 2px 6px rgba(27,61,34,0.25);">
+                      <i class="bi bi-truck"></i>
+                    </div>
+                    <span class="status-dot-indicator" 
+                          style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:#2ecc71; border-radius:50%; border:2px solid #fff;" 
+                          title="Active Now"></span>
+                  </div>
+
+                  <!-- Logistics Text Info -->
+                  <div style="flex:1; min-width:0;">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                      <strong style="font-size:0.88rem; color:var(--haat-green-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                        HAATEX
+                      </strong>
+                      <span class="conv-time-preview" id="logistics-last-time" style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
+                        <?= !empty($lastLogMsg['created_at']) ? date('h:i A', strtotime($lastLogMsg['created_at'])) : '' ?>
+                      </span>
+                    </div>
+
+                    <div style="display:flex; align-items:center; gap:6px; font-size:0.73rem; color:var(--text-muted); margin-top:2px;">
+                      <span class="last-msg-preview" id="logistics-last-msg" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
+                        <?= sanitize($lastLogMsg['message'] ?? 'Direct courier and rider dispatch desk...') ?>
+                      </span>
+                    </div>
+                  </div>
+
+                  <span class="unread-pill" id="logistics-unread-pill" style="font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px; flex-shrink:0; <?= $logisticsUnreadCount > 0 ? '' : 'display:none;' ?>">
+                    <?= $logisticsUnreadCount ?>
+                  </span>
+                </div>
+
+                <!-- Section Divider: Artisan Sellers -->
+                <div style="padding:10px 14px 4px; font-size:0.72rem; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; border-top:1px dashed #e2ded8; margin-top:4px;">
+                  Artisan Workshop Sellers
+                </div>
+
                 <?php if (empty($orderedProducts)): ?>
-                  <div style="padding:30px 18px; text-align:center; color:var(--text-muted); font-size:0.85rem;">
-                    <i class="bi bi-shop" style="font-size:2rem; display:block; margin-bottom:8px;"></i>
-                    When you order handcrafted items, your product seller conversations will appear here.
+                  <div style="padding:24px 18px; text-align:center; color:var(--text-muted); font-size:0.82rem;">
+                    <i class="bi bi-shop" style="font-size:1.8rem; display:block; margin-bottom:6px; opacity:0.6;"></i>
+                    When you order handcrafted crafts, artisan chat channels will appear here.
                   </div>
                 <?php else: ?>
-                  <?php foreach ($orderedProducts as $idx => $s): ?>
-                    <div class="conv-item <?= $idx === 0 ? 'active' : '' ?>" 
+                  <?php foreach ($orderedProducts as $idx => $s): 
+                    $isSelected = ((int)$s['seller_id'] === (int)($targetSellerId > 0 ? $targetSellerId : 0));
+                  ?>
+                    <div class="conv-item conv-seller <?= $isSelected ? 'active' : '' ?>" 
                          data-seller-id="<?= $s['seller_id'] ?>" 
-                         data-order-number="<?= sanitize($s['order_number']) ?>"
-                         data-product-name="<?= sanitize($s['product_name']) ?>"
+                         data-order-number="<?= sanitize($s['order_number'] ?? '') ?>"
+                         data-product-name="<?= sanitize($s['product_name'] ?? '') ?>"
+                         data-shop-name="<?= sanitize($s['shop_name']) ?>"
                          data-is-online="<?= $s['is_online'] ? '1' : '0' ?>"
-                         onclick="selectConversation(<?= $s['seller_id'] ?>, '<?= sanitize($s['order_number']) ?>', '<?= addslashes(sanitize($s['product_name'])) ?>', <?= $s['is_online'] ? '1' : '0' ?>)" 
-                         style="padding:12px 14px; border-bottom:1px solid rgba(0,0,0,0.05); cursor:pointer; display:flex; gap:12px; align-items:flex-start; transition:var(--transition); background:<?= $idx === 0 ? '#ffffff' : 'transparent' ?>;">
+                         onclick="selectConversation(<?= $s['seller_id'] ?>, '<?= addslashes(sanitize($s['order_number'] ?? '')) ?>', '<?= addslashes(sanitize($s['product_name'] ?? '')) ?>', <?= $s['is_online'] ? '1' : '0' ?>, '<?= addslashes(sanitize($s['shop_name'])) ?>')" 
+                         style="padding:12px 14px; border-bottom:1px solid rgba(0,0,0,0.05); cursor:pointer; display:flex; gap:12px; align-items:center; transition:var(--transition); background:<?= $isSelected ? '#ffffff' : 'transparent' ?>; <?= $isSelected ? 'border-left:3px solid var(--haat-clay);' : '' ?>">
                       
-                      <!-- Product Image Thumbnail with Live Status Dot -->
+                      <!-- Product Image Thumbnail / Shop Avatar with Live Status Dot -->
                       <div style="position:relative; flex-shrink:0;">
-                        <img src="<?= sanitize($s['featured_image'] ?: BASE_URL . 'assets/images/default-product.png') ?>" 
-                             alt="<?= sanitize($s['product_name']) ?>" 
-                             style="width:46px; height:46px; border-radius:8px; object-fit:cover; border:1px solid var(--haat-border); background:#fff;">
-                        <!-- Workable Active Dot (Green if online, Red if offline) -->
+                        <?php if (!empty($s['featured_image'])): ?>
+                          <img src="<?= sanitize($s['featured_image']) ?>" 
+                                alt="<?= sanitize($s['shop_name']) ?>" 
+                                style="width:44px; height:44px; border-radius:50%; object-fit:cover; border:1px solid var(--haat-border); background:#fff;">
+                        <?php else: ?>
+                          <div style="width:44px; height:44px; border-radius:50%; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-green); font-size:1.1rem; font-weight:700; border:1px solid var(--haat-border);">
+                            <?= strtoupper(substr($s['shop_name'], 0, 1)) ?>
+                          </div>
+                        <?php endif; ?>
+                        <!-- Active Dot -->
                         <span class="status-dot-indicator" 
-                              style="position:absolute; bottom:-2px; right:-2px; width:12px; height:12px; background:<?= $s['is_online'] ? '#2ecc71' : '#e74c3c' ?>; border-radius:50%; border:2px solid #fff;" 
+                              style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:<?= $s['is_online'] ? '#2ecc71' : '#cbd5e1' ?>; border-radius:50%; border:2px solid #fff;" 
                               title="<?= $s['is_online'] ? 'Active Now' : 'Offline' ?>"></span>
                       </div>
 
-                      <!-- Product and Seller Info -->
+                      <!-- Shop and Order Info -->
                       <div style="flex:1; min-width:0;">
                         <div style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
-                          <strong style="font-size:0.86rem; color:var(--haat-green-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
-                            <?= sanitize($s['product_name']) ?>
+                          <strong style="font-size:0.88rem; color:var(--haat-green-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                            <?= sanitize($s['shop_name']) ?>
                           </strong>
                           <?php if (!empty($s['last_message_time'])): ?>
-                            <span style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
+                            <span class="conv-time-preview" style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
                               <?= date('h:i A', strtotime($s['last_message_time'])) ?>
                             </span>
                           <?php endif; ?>
                         </div>
 
-                        <!-- Seller Shop Name -->
-                        <div style="font-size:0.75rem; color:var(--haat-clay); font-weight:600; display:flex; align-items:center; gap:4px; margin:2px 0;">
-                          <i class="bi bi-shop" style="font-size:0.72rem;"></i>
-                          <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><?= sanitize($s['shop_name']) ?></span>
-                        </div>
-
                         <!-- Order Number and Last Message Preview -->
-                        <div style="display:flex; align-items:center; gap:6px; font-size:0.73rem; color:var(--text-muted);">
-                          <span class="badge" style="background:#f1eee9; color:#6b5847; padding:1px 5px; font-size:0.68rem; border-radius:4px; flex-shrink:0;">
-                            #<?= sanitize($s['order_number']) ?>
-                          </span>
+                        <div style="display:flex; align-items:center; gap:6px; font-size:0.73rem; color:var(--text-muted); margin-top:2px;">
+                          <?php if (!empty($s['order_number'])): ?>
+                            <span class="badge" style="background:#f1eee9; color:#6b5847; padding:1px 5px; font-size:0.68rem; border-radius:4px; flex-shrink:0;">
+                              #<?= sanitize($s['order_number']) ?>
+                            </span>
+                          <?php endif; ?>
                           <span class="last-msg-preview" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
                             <?= sanitize($s['last_message'] ?? 'Click to chat...') ?>
                           </span>
@@ -448,7 +773,9 @@ require_once __DIR__ . '/../includes/header.php';
                       </div>
 
                       <?php if ($s['unread_count'] > 0): ?>
-                        <span class="unread-pill" style="width:8px; height:8px; background:var(--haat-clay); border-radius:50%; flex-shrink:0; margin-top:6px;"></span>
+                        <span class="unread-pill" style="font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px; flex-shrink:0;">
+                          <?= $s['unread_count'] ?>
+                        </span>
                       <?php endif; ?>
 
                     </div>
@@ -459,65 +786,57 @@ require_once __DIR__ . '/../includes/header.php';
             </div>
 
             <!-- Right Pane: Active Live Chat Window -->
-            <div style="display:flex; flex-direction:column; background:#ffffff;">
+            <div style="display:flex; flex-direction:column; height:600px; min-height:0; max-height:600px; background:#ffffff; overflow:hidden;">
               
               <!-- Chat Header -->
-              <div id="chat-header" style="padding:14px 20px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#ffffff;">
+              <div id="chat-header" style="padding:14px 20px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#ffffff; flex-shrink:0;">
                 <div style="display:flex; align-items:center; gap:12px;">
                   <div style="position:relative;">
                     <div id="active-chat-avatar" style="width:42px; height:42px; border-radius:50%; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-green); font-size:1.2rem; font-weight:700;">
-                      <?= !empty($orderedProducts) ? strtoupper(substr($orderedProducts[0]['shop_name'], 0, 1)) : 'S' ?>
+                      <i class="bi bi-truck"></i>
                     </div>
                     <!-- Workable Active/Offline Dot -->
                     <span id="active-chat-avatar-status" 
-                          style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:<?= (!empty($orderedProducts) && $orderedProducts[0]['is_online']) ? '#2ecc71' : '#e74c3c' ?>; border-radius:50%; border:2px solid #fff;"></span>
+                          style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:#2ecc71; border-radius:50%; border:2px solid #fff;"></span>
                   </div>
 
                   <div>
                     <strong id="active-chat-title" style="color:var(--haat-green-dark); font-size:0.98rem; display:block;">
-                      <?= !empty($orderedProducts) ? sanitize($orderedProducts[0]['shop_name']) : 'Select a Seller' ?>
+                      HAATEX
                     </strong>
+                    <span id="active-chat-subtitle" style="font-size:0.75rem; color:var(--text-muted); display:flex; align-items:center; gap:4px; margin-top:1px;">
+                      Official Delivery Desk
+                    </span>
                   </div>
                 </div>
 
-                <!-- Only Order ID in Chat Header -->
+                <!-- Order Reference Tag -->
                 <div id="active-chat-order-tag">
-                  <span id="active-chat-product-label" class="badge" style="background:#f7efe6; color:var(--haat-clay); font-size:0.84rem; font-weight:700; padding:6px 12px; border-radius:6px; letter-spacing:0.3px;">
-                    <?php if (!empty($orderedProducts)): ?>
-                      #<?= sanitize($orderedProducts[0]['order_number']) ?>
-                    <?php endif; ?>
+                  <span id="active-chat-product-label" class="badge" style="background:#f7efe6; color:var(--haat-clay); font-size:0.84rem; font-weight:700; padding:6px 12px; border-radius:6px; letter-spacing:0.3px; display:none;">
                   </span>
                 </div>
               </div>
 
-              <!-- Message Stream Bubbles -->
-              <div id="chat-stream" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#f9f9f9;">
+              <!-- Message Stream Bubbles (Pinned Scrolling Container) -->
+              <div id="chat-stream" style="flex:1 1 0%; min-height:0; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#f9f9f9;">
                 <div style="text-align:center; padding:40px; color:var(--text-muted); font-size:0.9rem;">
                   <i class="bi bi-chat-heart text-clay" style="font-size:2.4rem; display:block; margin-bottom:10px;"></i>
                   Loading conversation...
                 </div>
               </div>
 
-              <!-- Chat Input Bar -->
-              <div style="border-top:1px solid var(--haat-border); padding:12px 18px; background:#ffffff;">
+              <!-- Chat Input Bar (ALWAYS Visible at Bottom) -->
+              <div style="border-top:1px solid var(--haat-border); padding:12px 18px; background:#ffffff; flex-shrink:0;">
                 
-                <!-- Quick Suggestion Tags -->
-                <div style="display:flex; gap:6px; margin-bottom:10px; overflow-x:auto; padding-bottom:4px;">
-                  <button type="button" onclick="setQuickMsg('Assalamu Alaikum, has my order been dispatched?')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem;">
-                    🚚 Has it been dispatched?
-                  </button>
-                  <button type="button" onclick="setQuickMsg('Please ensure water-proof protective packaging.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem;">
-                    📦 Please pack securely
-                  </button>
-                  <button type="button" onclick="setQuickMsg('Could you confirm expected delivery date?')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem;">
-                    📅 Delivery date?
-                  </button>
+                <!-- Quick Suggestion Tags Container -->
+                <div id="chat-quick-suggestions" style="display:flex; gap:6px; margin-bottom:10px; overflow-x:auto; padding-bottom:4px;">
+                  <!-- Injected dynamically via JS -->
                 </div>
 
                 <!-- Input Form -->
                 <form id="chat-form" onsubmit="sendMessage(event)" style="display:flex; gap:10px; align-items:center;">
-                  <input type="hidden" id="chat-seller-id" value="">
-                  <input type="text" id="chat-input" placeholder="Type a message to the artisan seller..." required autocomplete="off" style="flex:1; padding:10px 16px; border:1px solid var(--haat-border); border-radius:24px; font-size:0.9rem; outline:none; transition:var(--transition);" onfocus="this.style.borderColor='var(--haat-clay)';" onblur="this.style.borderColor='var(--haat-border)';">
+                  <input type="hidden" id="chat-seller-id" value="0">
+                  <input type="text" id="chat-input" placeholder="Type a message to HAATEX Logistics Delivery Desk..." required autocomplete="off" style="flex:1; padding:10px 16px; border:1px solid var(--haat-border); border-radius:24px; font-size:0.9rem; outline:none; transition:var(--transition);" onfocus="this.style.borderColor='var(--haat-clay)';" onblur="this.style.borderColor='var(--haat-border)';">
                   <button type="submit" id="chat-send-btn" class="btn btn-clay" style="width:42px; height:42px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                     <i class="bi bi-send-fill" style="margin-left:2px;"></i>
                   </button>
@@ -577,12 +896,12 @@ require_once __DIR__ . '/../includes/header.php';
                     <a href="<?= BASE_URL ?>product.php?id=<?= $wItem['id'] ?>" style="font-size:0.88rem; font-weight:700; color:var(--haat-green-dark); text-decoration:none; margin-bottom:8px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">
                       <?= sanitize($wItem['name']) ?>
                     </a>
-                    <div style="margin-top:auto; padding-top:8px; display:flex; justify-content:space-between; align-items:center;">
-                      <span style="font-weight:800; color:var(--haat-green); font-size:1rem;">
+                    <div style="margin-top:auto; padding-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                      <span style="font-weight:800; color:var(--haat-green); font-size:1.05rem;">
                         <?= formatPrice($wItem['sale_price'] ?: $wItem['price']) ?>
                       </span>
-                      <button type="button" class="btn btn-sm btn-clay btn-add-cart" data-product-id="<?= $wItem['id'] ?>" style="padding:4px 9px; font-size:0.78rem;">
-                        <i class="bi bi-bag-plus"></i> Cart
+                      <button type="button" class="btn btn-sm btn-clay btn-add-cart btn-add-cart-action" data-product-id="<?= $wItem['id'] ?>" style="background:var(--haat-clay) !important; color:#ffffff !important; border:none; padding:6px 14px; font-size:0.82rem; font-weight:700; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:6px; cursor:pointer; box-shadow:0 2px 6px rgba(194,97,45,0.25); width:auto !important; height:auto !important; transition:all 0.2s ease;">
+                        <i class="bi bi-bag-plus-fill"></i> Add to Cart
                       </button>
                     </div>
                   </div>
@@ -670,20 +989,43 @@ require_once __DIR__ . '/../includes/header.php';
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 14px;
+    padding: 11px 16px;
     border-radius: var(--radius-sm);
     color: var(--text-main);
+    font-size: 0.92rem;
+    font-weight: 600;
     text-decoration: none;
-    transition: var(--transition);
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
   }
   .dash-tab-link:hover {
-    background: var(--haat-sand);
-    color: var(--haat-green);
+    background: #faf7f2;
+    color: var(--haat-clay);
   }
   .dash-tab-link.active {
-    background: var(--haat-sand);
-    color: var(--haat-green);
+    background: var(--haat-clay-light);
+    color: var(--haat-clay);
     font-weight: 700;
+    border-color: rgba(194, 97, 45, 0.18);
+  }
+  .dash-tab-link .badge {
+    transition: all 0.2s ease;
+  }
+  .dash-tab-link:not(.active) .wishlist-count-badge {
+    background: var(--haat-sand) !important;
+    color: var(--haat-green-dark) !important;
+    border: 1px solid rgba(27, 61, 34, 0.1) !important;
+  }
+  .dash-tab-link.active .badge {
+    background: var(--haat-clay) !important;
+    color: #ffffff !important;
+    border: none !important;
+    box-shadow: 0 1px 5px rgba(194, 97, 45, 0.4) !important;
+  }
+  .btn-add-cart-action:hover {
+    background: #a34e20 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(194, 97, 45, 0.35) !important;
   }
   .conv-item:hover {
     background: #f2ede4 !important;
@@ -695,10 +1037,38 @@ require_once __DIR__ . '/../includes/header.php';
 </style>
 
 <script>
-  let activeSellerId = <?= !empty($orderedSellers) ? (int)$orderedSellers[0]['seller_id'] : 0 ?>;
+  let activeConversationType = '<?= $targetSellerId > 0 ? "seller" : "logistics" ?>';
+  let activeSellerId = <?= $targetSellerId > 0 ? $targetSellerId : (!empty($orderedSellers) ? (int)$orderedSellers[0]['seller_id'] : 0) ?>;
+  let activeOrderNumber = '<?= !empty($orderedSellers) ? addslashes(sanitize($orderedSellers[0]['order_number'] ?? '')) : '' ?>';
   let chatPollTimer = null;
+  let lastMessageCount = -1;
 
-  // Tab switching logic (seamless on right-side panel without page navigation)
+  // Quick suggestions for Logistics vs Seller
+  const LOGISTICS_SUGGESTIONS = [
+    { icon: '🚚', text: 'When will my package be delivered?' },
+    { icon: '📍', text: 'Where is the delivery rider now?' },
+    { icon: '📞', text: 'Please call me before doorstep delivery.' },
+    { icon: '📦', text: 'Please confirm my delivery address.' }
+  ];
+
+  const SELLER_SUGGESTIONS = [
+    { icon: '🚚', text: 'Assalamu Alaikum, has my order been dispatched?' },
+    { icon: '📦', text: 'Please ensure water-proof protective packaging.' },
+    { icon: '📅', text: 'Could you confirm expected crafting completion date?' }
+  ];
+
+  function renderQuickSuggestions(type) {
+    const box = document.getElementById('chat-quick-suggestions');
+    if (!box) return;
+    const items = (type === 'logistics') ? LOGISTICS_SUGGESTIONS : SELLER_SUGGESTIONS;
+    box.innerHTML = items.map(s => `
+      <button type="button" onclick="setQuickMsg('${escapeHtml(s.text)}')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap; padding:4px 9px;">
+        ${s.icon} ${escapeHtml(s.text)}
+      </button>
+    `).join('');
+  }
+
+  // Tab switching logic
   function switchTab(tabId) {
     document.querySelectorAll('.dash-panel').forEach(p => p.style.display = 'none');
     document.querySelectorAll('.dash-tab-link').forEach(l => l.classList.remove('active'));
@@ -715,74 +1085,237 @@ require_once __DIR__ . '/../includes/header.php';
     window.location.hash = tabId;
 
     if (tabId === 'messages') {
-      if (activeSellerId) {
+      if (activeConversationType === 'logistics') {
+        selectLogisticsConversation(activeOrderNumber);
+      } else if (activeSellerId) {
         loadMessages(activeSellerId);
-        startPolling();
       }
-    } else {
-      stopPolling();
+      pollCustomerConversations();
     }
   }
 
-  // Hash-based tab activation on initial load
-  window.addEventListener('DOMContentLoaded', () => {
-    const hash = window.location.hash.replace('#', '');
-    if (hash && ['overview', 'orders', 'messages', 'wishlist', 'profile'].includes(hash)) {
-      switchTab(hash);
+  // Toggle Order Row Expandable Details Drawer
+  function toggleOrderRowDetails(orderId) {
+    const drawer = document.getElementById('order-details-drawer-' + orderId);
+    const chevron = document.getElementById('order-chevron-' + orderId);
+    if (!drawer) return;
+    
+    if (drawer.style.display === 'none' || drawer.style.display === '') {
+      drawer.style.display = 'table-row';
+      if (chevron) {
+        chevron.style.transform = 'rotate(90deg)';
+      }
     } else {
-      switchTab('overview');
+      drawer.style.display = 'none';
+      if (chevron) {
+        chevron.style.transform = 'rotate(0deg)';
+      }
+    }
+  }
+
+  // ==========================================
+  // LOGISTICS CONVERSATION HANDLERS
+  // ==========================================
+  function selectLogisticsConversation(orderNum) {
+    activeConversationType = 'logistics';
+    if (orderNum) activeOrderNumber = orderNum;
+    lastMessageCount = -1;
+
+    // Highlight logistics item in left list
+    document.querySelectorAll('.conv-item').forEach(item => {
+      item.classList.remove('active');
+      item.style.background = 'transparent';
+      item.style.borderLeft = 'none';
+    });
+    const logItem = document.getElementById('conv-item-logistics');
+    if (logItem) {
+      logItem.classList.add('active');
+      logItem.style.background = '#ffffff';
+      logItem.style.borderLeft = '3px solid var(--haat-clay)';
+      const unreadPill = document.getElementById('logistics-unread-pill');
+      if (unreadPill) unreadPill.style.display = 'none';
     }
 
-    // Attach click listeners to all tab links
-    document.querySelectorAll('.dash-tab-link').forEach(link => {
-      link.addEventListener('click', (e) => {
-        e.preventDefault();
-        const tab = link.getAttribute('data-tab');
-        switchTab(tab);
-      });
-    });
-  });
+    // Update Header for Logistics
+    const headerTitle = document.getElementById('active-chat-title');
+    const headerSub = document.getElementById('active-chat-subtitle');
+    const headerAvatar = document.getElementById('active-chat-avatar');
+    const tag = document.getElementById('active-chat-product-label');
+    const input = document.getElementById('chat-input');
 
-  // Messenger functions
-  function selectConversation(sellerId, orderNum, productName, isOnline) {
+    if (headerTitle) headerTitle.innerText = 'HAATEX';
+    if (headerSub) headerSub.innerText = 'Official Delivery & Rider Dispatch Desk';
+    if (headerAvatar) {
+      headerAvatar.style.background = 'linear-gradient(135deg, #1b3d22 0%, #2d5a36 100%)';
+      headerAvatar.style.color = '#ffffff';
+      headerAvatar.innerHTML = '<i class="bi bi-truck"></i>';
+    }
+    applyOnlineStatus(true);
+
+    if (tag) {
+      if (activeOrderNumber) {
+        tag.innerHTML = `#${escapeHtml(activeOrderNumber)}`;
+        tag.style.display = 'inline-block';
+      } else {
+        tag.style.display = 'none';
+      }
+    }
+
+    if (input) {
+      input.placeholder = activeOrderNumber ? `Type a message regarding Order #${activeOrderNumber}...` : 'Type a message to HAATEX Logistics Delivery Desk...';
+    }
+
+    renderQuickSuggestions('logistics');
+    loadLogisticsMessages();
+  }
+
+  function openChatWithLogistics(orderNum) {
+    activeOrderNumber = orderNum || '';
+    switchTab('messages');
+    selectLogisticsConversation(orderNum);
+  }
+
+  function loadLogisticsMessages(isPolling = false) {
+    const stream = document.getElementById('chat-stream');
+    if (!stream) return;
+
+    fetch('<?= BASE_URL ?>api/messages.php?action=get_logistics_chat')
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) return;
+
+        if (isPolling && data.messages.length === lastMessageCount) {
+          return;
+        }
+        lastMessageCount = data.messages.length;
+
+        if (data.messages.length === 0) {
+          stream.innerHTML = `
+            <div style="text-align:center; padding:50px 20px; color:var(--text-muted);">
+              <div style="width:60px; height:60px; border-radius:50%; background:var(--haat-sand); color:var(--haat-green-dark); display:inline-flex; align-items:center; justify-content:center; font-size:1.8rem; margin-bottom:12px;">
+                <i class="bi bi-truck"></i>
+              </div>
+              <strong style="color:var(--haat-green-dark); font-size:1.05rem; display:block;">HAATEX Live Delivery Support Desk</strong>
+              <p style="font-size:0.85rem; margin:6px auto 0; max-width:380px;">Send a message to our logistics coordination hub for live package updates, rider contact, or delivery schedule inquiries.</p>
+            </div>
+          `;
+          return;
+        }
+
+        let html = '';
+        data.messages.forEach(m => {
+          if (m.is_me) {
+            // Customer outgoing bubble (Right)
+            html += `
+              <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
+                <div style="max-width:70%;">
+                  <div style="background:var(--haat-green); color:#ffffff; padding:10px 16px; border-radius:18px 18px 4px 18px; font-size:0.9rem; line-height:1.45; box-shadow:0 2px 6px rgba(0,0,0,0.08);">
+                    ${escapeHtml(m.message)}
+                  </div>
+                  <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:3px; display:flex; justify-content:flex-end; align-items:center; gap:4px;">
+                    <span>${m.time}</span> • <span>${m.date}</span> <i class="bi bi-check2-all" style="color:var(--haat-green);"></i>
+                  </div>
+                </div>
+              </div>
+            `;
+          } else {
+            // HAATEX Logistics incoming bubble (Left)
+            html += `
+              <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:6px;">
+                <div style="width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg, #1b3d22 0%, #2d5a36 100%); color:#fff; display:flex; align-items:center; justify-content:center; font-size:0.95rem; flex-shrink:0;">
+                  <i class="bi bi-truck"></i>
+                </div>
+                <div style="max-width:70%;">
+                  <div style="background:#ffffff; color:var(--text-main); border:1px solid var(--haat-border); padding:10px 16px; border-radius:18px 18px 18px 4px; font-size:0.9rem; line-height:1.45; box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+                    <div style="font-size:0.72rem; font-weight:700; color:var(--haat-clay); margin-bottom:3px;">HAATEX Dispatch Team</div>
+                    ${escapeHtml(m.message)}
+                  </div>
+                  <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px; margin-left:4px;">
+                    <span>${m.time}</span> • <span>${m.date}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+        });
+
+        stream.innerHTML = html;
+        stream.scrollTop = stream.scrollHeight;
+      })
+      .catch(console.error);
+  }
+
+  // ==========================================
+  // ARTISAN SELLER CONVERSATION HANDLERS
+  // ==========================================
+  function selectConversation(sellerId, orderNum, productName, isOnline, shopName) {
+    activeConversationType = 'seller';
     activeSellerId = sellerId;
+    activeOrderNumber = orderNum || '';
+    lastMessageCount = -1;
+
+    // Reset left list highlight
     document.querySelectorAll('.conv-item').forEach(item => {
       const match = parseInt(item.getAttribute('data-seller-id')) === sellerId;
       if (match) {
         item.classList.add('active');
         item.style.background = '#ffffff';
+        item.style.borderLeft = '3px solid var(--haat-clay)';
+        const unreadPill = item.querySelector('.unread-pill');
+        if (unreadPill) unreadPill.remove();
       } else {
         item.classList.remove('active');
         item.style.background = 'transparent';
+        item.style.borderLeft = 'none';
       }
     });
 
-    if (orderNum) {
-      const tag = document.getElementById('active-chat-product-label');
-      if (tag) {
+    const headerAvatar = document.getElementById('active-chat-avatar');
+    if (headerAvatar) {
+      headerAvatar.style.background = 'var(--haat-sand)';
+      headerAvatar.style.color = 'var(--haat-green)';
+      headerAvatar.innerText = shopName ? shopName.charAt(0).toUpperCase() : 'S';
+    }
+
+    const tag = document.getElementById('active-chat-product-label');
+    if (tag) {
+      if (orderNum) {
         tag.innerHTML = `#${escapeHtml(orderNum)}`;
+        tag.style.display = 'inline-block';
+      } else {
+        tag.style.display = 'none';
       }
     }
+
+    if (shopName) {
+      document.getElementById('active-chat-title').innerText = shopName;
+    }
+
     if (typeof isOnline !== 'undefined') {
       applyOnlineStatus(Boolean(isOnline));
     }
+
+    const input = document.getElementById('chat-input');
+    if (input) {
+      input.placeholder = orderNum ? `Type message regarding Order #${orderNum}...` : 'Type a message to the artisan seller...';
+    }
+
+    renderQuickSuggestions('seller');
     loadMessages(sellerId);
   }
 
   function applyOnlineStatus(isOnline) {
     const statusDot = document.getElementById('active-chat-avatar-status');
     if (statusDot) {
-      statusDot.style.background = isOnline ? '#2ecc71' : '#e74c3c';
+      statusDot.style.background = isOnline ? '#2ecc71' : '#cbd5e1';
       statusDot.title = isOnline ? 'Active Now' : 'Offline';
     }
   }
 
-  function openChatWithSeller(sellerId, orderNum, productName, isOnline) {
+  function openChatWithSeller(sellerId, orderNum, productName, isOnline, shopName) {
+    activeOrderNumber = orderNum || '';
     switchTab('messages');
-    selectConversation(sellerId, orderNum, productName, isOnline);
-    if (orderNum) {
-      document.getElementById('chat-input').placeholder = `Type message regarding Order #${orderNum}...`;
-    }
+    selectConversation(sellerId, orderNum, productName, isOnline, shopName);
   }
 
   function setQuickMsg(text) {
@@ -791,27 +1324,58 @@ require_once __DIR__ . '/../includes/header.php';
     input.focus();
   }
 
-  function loadMessages(sellerId) {
+  function loadMessages(sellerId, isPolling = false) {
     if (!sellerId) return;
     const stream = document.getElementById('chat-stream');
-    document.getElementById('chat-seller-id').value = sellerId;
+    const hiddenInput = document.getElementById('chat-seller-id');
+    if (hiddenInput) hiddenInput.value = sellerId;
 
     fetch(`<?= BASE_URL ?>api/messages.php?action=get&seller_id=${sellerId}`)
       .then(res => res.json())
       .then(data => {
         if (!data.success) return;
 
-        // Update header
-        document.getElementById('active-chat-title').innerText = data.seller.shop_name;
-        document.getElementById('active-chat-avatar').innerText = data.seller.shop_name.charAt(0).toUpperCase();
-        applyOnlineStatus(Boolean(data.seller.is_online));
+        // Immediately update sidebar unread badge
+        if (typeof data.unread_total !== 'undefined') {
+          const navBadge = document.getElementById('cust-nav-msg-badge') || document.querySelector('.dash-tab-link[data-tab="messages"] .badge');
+          if (navBadge) {
+            if (data.unread_total > 0) {
+              navBadge.innerText = data.unread_total;
+              navBadge.style.display = 'inline-block';
+            } else {
+              navBadge.style.display = 'none';
+            }
+          }
+        }
+
+        // Remove unread pill on active conversation item
+        const activeItem = document.querySelector(`.conv-item[data-seller-id="${sellerId}"]`);
+        if (activeItem) {
+          const unreadPill = activeItem.querySelector('.unread-pill');
+          if (unreadPill) unreadPill.remove();
+        }
+
+        if (isPolling && data.messages.length === lastMessageCount) {
+          return;
+        }
+        lastMessageCount = data.messages.length;
+
+        // Update active header
+        if (data.seller) {
+          document.getElementById('active-chat-title').innerText = data.seller.shop_name;
+          const subtitle = document.getElementById('active-chat-subtitle');
+          if (subtitle && data.seller.artisan_name) {
+            subtitle.innerText = `${data.seller.artisan_name} (${data.seller.district || 'Artisan'})`;
+          }
+          applyOnlineStatus(Boolean(data.seller.is_online));
+        }
 
         // Render message bubbles
         if (data.messages.length === 0) {
           stream.innerHTML = `
             <div style="text-align:center; padding:50px 20px; color:var(--text-muted);">
               <i class="bi bi-chat-heart" style="font-size:2.5rem; color:var(--haat-clay); display:block; margin-bottom:8px;"></i>
-              <strong style="color:var(--haat-green-dark); font-size:1rem; display:block;">Start conversation with ${data.seller.shop_name}</strong>
+              <strong style="color:var(--haat-green-dark); font-size:1rem; display:block;">Start conversation with ${data.seller ? escapeHtml(data.seller.shop_name) : 'Artisan'}</strong>
               <p style="font-size:0.85rem; margin-top:4px;">Ask questions regarding handloom materials, sizing, packaging or dispatch times.</p>
             </div>
           `;
@@ -839,7 +1403,7 @@ require_once __DIR__ . '/../includes/header.php';
             html += `
               <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:6px;">
                 <div style="width:32px; height:32px; border-radius:50%; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-green); font-size:0.85rem; font-weight:700; flex-shrink:0;">
-                  ${data.seller.shop_name.charAt(0).toUpperCase()}
+                  ${data.seller ? data.seller.shop_name.charAt(0).toUpperCase() : 'S'}
                 </div>
                 <div style="max-width:70%;">
                   <div style="background:#ffffff; color:var(--text-main); border:1px solid var(--haat-border); padding:10px 16px; border-radius:18px 18px 18px 4px; font-size:0.9rem; line-height:1.45; box-shadow:0 1px 4px rgba(0,0,0,0.04);">
@@ -857,47 +1421,177 @@ require_once __DIR__ . '/../includes/header.php';
         stream.innerHTML = html;
         stream.scrollTop = stream.scrollHeight;
       })
-      .catch(err => console.error(err));
+      .catch(console.error);
   }
 
+  // Unified Message Sender
   function sendMessage(e) {
     e.preventDefault();
     const input = document.getElementById('chat-input');
     const msg = input.value.trim();
-    if (!msg || !activeSellerId) return;
+    if (!msg) return;
 
-    const fd = new FormData();
-    fd.append('action', 'send');
-    fd.append('seller_id', activeSellerId);
-    fd.append('message', msg);
-
-    input.value = '';
     const sendBtn = document.getElementById('chat-send-btn');
     sendBtn.disabled = true;
 
-    fetch('<?= BASE_URL ?>api/messages.php', {
-      method: 'POST',
-      body: fd
-    })
+    if (activeConversationType === 'logistics') {
+      // SEND TO HAATEX LOGISTICS
+      const fd = new FormData();
+      fd.append('action', 'send_logistics_chat');
+      fd.append('message', msg);
+
+      fetch('<?= BASE_URL ?>api/messages.php', {
+        method: 'POST',
+        body: fd
+      })
+        .then(res => res.json())
+        .then(data => {
+          sendBtn.disabled = false;
+          if (data.success) {
+            input.value = '';
+            lastMessageCount = -1;
+            loadLogisticsMessages();
+            pollCustomerConversations();
+          } else {
+            alert(data.error || 'Failed to send message to HAATEX Logistics');
+          }
+        })
+        .catch(err => {
+          sendBtn.disabled = false;
+          console.error(err);
+        });
+
+    } else {
+      // SEND TO ARTISAN SELLER
+      if (!activeSellerId) {
+        sendBtn.disabled = false;
+        return;
+      }
+      const fd = new FormData();
+      fd.append('action', 'send');
+      fd.append('seller_id', activeSellerId);
+      fd.append('message', msg);
+      if (activeOrderNumber) {
+        fd.append('order_number', activeOrderNumber);
+      }
+
+      fetch('<?= BASE_URL ?>api/messages.php', {
+        method: 'POST',
+        body: fd
+      })
+        .then(res => res.json())
+        .then(data => {
+          sendBtn.disabled = false;
+          if (data.success) {
+            input.value = '';
+            lastMessageCount = -1;
+            loadMessages(activeSellerId);
+            pollCustomerConversations();
+          } else {
+            alert(data.error || 'Failed to send message to seller');
+          }
+        })
+        .catch(err => {
+          sendBtn.disabled = false;
+          console.error(err);
+        });
+    }
+  }
+
+  function pollCustomerConversations() {
+    fetch('<?= BASE_URL ?>api/messages.php?action=customer_conversations')
       .then(res => res.json())
       .then(data => {
-        sendBtn.disabled = false;
-        if (data.success) {
-          loadMessages(activeSellerId);
+        if (!data.success) return;
+
+        // Update sidebar unread badge
+        const badge = document.getElementById('cust-nav-msg-badge') || document.querySelector('.dash-tab-link[data-tab="messages"] .badge');
+        if (badge) {
+          if (data.unread_total > 0) {
+            badge.innerText = data.unread_total;
+            badge.style.display = 'inline-block';
+          } else {
+            badge.style.display = 'none';
+          }
+        }
+
+        // Update Logistics Conversation preview & unread
+        if (data.logistics) {
+          const logMsgPreview = document.getElementById('logistics-last-msg');
+          const logTimePreview = document.getElementById('logistics-last-time');
+          const logUnreadPill = document.getElementById('logistics-unread-pill');
+
+          if (logMsgPreview && data.logistics.last_message) {
+            logMsgPreview.innerText = data.logistics.last_message;
+          }
+          if (logTimePreview && data.logistics.last_message_time) {
+            logTimePreview.innerText = data.logistics.last_message_time;
+          }
+          if (logUnreadPill) {
+            if (activeConversationType === 'logistics') {
+              logUnreadPill.style.display = 'none';
+            } else if (data.logistics.unread_count > 0) {
+              logUnreadPill.innerText = data.logistics.unread_count;
+              logUnreadPill.style.display = 'inline-block';
+            } else {
+              logUnreadPill.style.display = 'none';
+            }
+          }
+        }
+
+        // Update Seller Conversation previews
+        if (Array.isArray(data.conversations)) {
+          data.conversations.forEach(c => {
+            const item = document.querySelector(`.conv-item[data-seller-id="${c.seller_id}"]`);
+            if (item) {
+              const preview = item.querySelector('.last-msg-preview');
+              if (preview && c.last_message) {
+                preview.innerText = c.last_message;
+              }
+              const timePreview = item.querySelector('.conv-time-preview');
+              if (timePreview && c.last_message_time) {
+                timePreview.innerText = c.last_message_time;
+              }
+              const dot = item.querySelector('.status-dot-indicator');
+              if (dot) {
+                dot.style.background = c.is_online ? '#2ecc71' : '#cbd5e1';
+                dot.title = c.is_online ? 'Active Now' : 'Offline';
+              }
+
+              // Unread count pill
+              let pill = item.querySelector('.unread-pill');
+              if (activeConversationType === 'seller' && c.seller_id === activeSellerId) {
+                if (pill) pill.remove();
+              } else if (c.unread_count > 0) {
+                if (!pill) {
+                  pill = document.createElement('span');
+                  pill.className = 'unread-pill';
+                  pill.style = 'font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px; flex-shrink:0;';
+                  item.appendChild(pill);
+                }
+                pill.innerText = c.unread_count;
+              } else if (pill) {
+                pill.remove();
+              }
+            }
+          });
         }
       })
-      .catch(err => {
-        sendBtn.disabled = false;
-        console.error(err);
-      });
+      .catch(console.error);
   }
 
   function startPolling() {
     stopPolling();
+    pollCustomerConversations();
     chatPollTimer = setInterval(() => {
+      pollCustomerConversations();
       const messagesPanel = document.getElementById('tab-messages');
-      if (messagesPanel && messagesPanel.style.display !== 'none' && activeSellerId) {
-        loadMessages(activeSellerId);
+      if (messagesPanel && messagesPanel.style.display !== 'none') {
+        if (activeConversationType === 'logistics') {
+          loadLogisticsMessages(true);
+        } else if (activeSellerId) {
+          loadMessages(activeSellerId, true);
+        }
       }
     }, 3500);
   }
@@ -910,10 +1604,75 @@ require_once __DIR__ . '/../includes/header.php';
   }
 
   function escapeHtml(text) {
+    if (!text) return '';
     const div = document.createElement('div');
     div.innerText = text;
     return div.innerHTML;
   }
+
+  // Hash & URL Target Initializer
+  window.addEventListener('DOMContentLoaded', () => {
+    const hash = window.location.hash.replace('#', '');
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasTargetSeller = <?= $targetSellerId > 0 ? 'true' : 'false' ?>;
+    const isLogisticsTarget = (urlParams.get('target') === 'logistics');
+
+    if (hash && ['overview', 'orders', 'messages', 'wishlist', 'profile'].includes(hash)) {
+      switchTab(hash);
+      if (hash === 'messages') {
+        if (isLogisticsTarget || !hasTargetSeller) {
+          selectLogisticsConversation();
+        } else if (activeSellerId) {
+          loadMessages(activeSellerId);
+        }
+      }
+    } else if (hasTargetSeller) {
+      switchTab('messages');
+      if (activeSellerId) {
+        loadMessages(activeSellerId);
+      }
+    } else {
+      switchTab('overview');
+    }
+
+    // Attach click listeners to all tab links
+    document.querySelectorAll('.dash-tab-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const tab = link.getAttribute('data-tab');
+        switchTab(tab);
+      });
+    });
+
+    startPolling();
+  });
+
+  // Defensive DOM binding fallback
+  function ensureCustomerBindings() {
+    try {
+      const links = document.querySelectorAll('.dash-tab-link');
+      links.forEach(link => {
+        if (!link.hasAttribute('data-has-binding')) {
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const tab = link.getAttribute('data-tab');
+            switchTab(tab);
+          });
+          link.setAttribute('data-has-binding', '1');
+        }
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  setTimeout(ensureCustomerBindings, 350);
+
+  window.addEventListener('hashchange', () => {
+    const hash = window.location.hash.replace('#', '');
+    if (hash && ['overview', 'orders', 'messages', 'wishlist', 'profile'].includes(hash)) {
+      switchTab(hash);
+    }
+  });
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

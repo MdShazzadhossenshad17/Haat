@@ -30,6 +30,13 @@ if (isset($_GET['remove'])) {
 $wishlistProducts = getUserWishlistProducts();
 $wishlistCount = count($wishlistProducts);
 
+// Prevent sellers/admins accidentally accessing customer wishlist page
+if (isLoggedIn() && (isSeller() || isAdmin())) {
+  setFlash('danger', 'Buyer wishlist is not available in vendor or admin accounts.');
+  header('Location: ' . BASE_URL . (isSeller() ? 'seller/' : 'admin/'));
+  exit;
+}
+
 $pageTitle = 'My Saved Crafts & Wishlist (' . $wishlistCount . ') — HAAT';
 require_once __DIR__ . '/../includes/header.php';
 ?>
@@ -49,9 +56,17 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 
     <div style="display:flex; gap:10px;">
-      <?php if (isLoggedIn()): ?>
+      <?php if (isAdmin()): ?>
+        <a href="<?= BASE_URL ?>admin/" class="btn btn-sm btn-outline-green">
+          <i class="bi bi-speedometer2"></i> Admin Dashboard
+        </a>
+      <?php elseif (isSeller()): ?>
+        <a href="<?= BASE_URL ?>seller/" class="btn btn-sm btn-outline-green">
+          <i class="bi bi-speedometer2"></i> Seller Dashboard
+        </a>
+      <?php elseif (isLoggedIn()): ?>
         <a href="<?= BASE_URL ?>customer/" class="btn btn-sm btn-outline-green">
-          <i class="bi bi-speedometer2"></i> Customer Dashboard
+          <i class="bi bi-speedometer2"></i> Buyer Dashboard
         </a>
       <?php else: ?>
         <a href="<?= BASE_URL ?>login.php" class="btn btn-sm btn-outline-green">
@@ -134,8 +149,8 @@ require_once __DIR__ . '/../includes/header.php';
 
             <!-- Action Buttons -->
             <div style="display:grid; grid-template-columns: 1fr auto; gap:8px; margin-top:14px;">
-              <button type="button" class="btn btn-sm btn-clay btn-add-cart" data-product-id="<?= $prod['id'] ?>" style="width:100%; display:inline-flex; align-items:center; justify-content:center; gap:6px;">
-                <i class="bi bi-bag-plus"></i> Move to Cart
+              <button type="button" class="btn btn-sm btn-clay btn-add-cart btn-add-cart-action" data-product-id="<?= $prod['id'] ?>" style="width:100%; background:var(--haat-clay) !important; color:#ffffff !important; border:none; padding:8px 16px; font-weight:700; border-radius:var(--radius-sm); display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; box-shadow:0 2px 6px rgba(194,97,45,0.25); transition:all 0.2s ease;">
+                <i class="bi bi-bag-plus-fill"></i> Move to Cart
               </button>
               <a href="<?= BASE_URL ?>customer/wishlist.php?remove=<?= $prod['id'] ?>" class="btn btn-sm btn-outline-danger" title="Remove" style="padding:6px 10px; color:#c52828; border:1px solid #f8c8dc; border-radius:var(--radius-sm); text-decoration:none;">
                 <i class="bi bi-trash"></i>

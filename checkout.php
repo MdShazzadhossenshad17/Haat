@@ -11,19 +11,18 @@ if (empty($cart)) {
     exit;
 }
 
+// Enforce global rule: prevent any seller from checking out
+if (isLoggedIn() && isSeller()) {
+    setFlash('danger', 'Sellers are not allowed to make purchases on the marketplace.');
+    header('Location: ' . BASE_URL . '');
+    exit;
+}
+
 $user = currentUser();
 $subtotal = getCartSubtotal();
-$discountAmount = 0;
 $appliedCoupon = $_SESSION['applied_coupon'] ?? '';
-
-if (!empty($appliedCoupon)) {
-    $cStmt = $db->prepare("SELECT * FROM `coupons` WHERE `code` = ? AND `is_active` = 1 LIMIT 1");
-    $cStmt->execute([$appliedCoupon]);
-    $cpn = $cStmt->fetch();
-    if ($cpn) {
-        $discountAmount = ($subtotal * (int)$cpn['discount_percent']) / 100;
-    }
-}
+$couponResult = calculateCouponDiscount($appliedCoupon, $subtotal);
+$discountAmount = $couponResult['discount'];
 
 $shipping = $subtotal >= 3000 ? 0.00 : 80.00;
 $grandTotal = max(0, $subtotal - $discountAmount + $shipping);
@@ -53,44 +52,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
         try {
             $db->beginTransaction();
 
+            // Re-read prices and stock while the products are locked. Cart values are only a display cache.
+            $lockedItems = [];
+            $productStmt = $db->prepare("SELECT p.* FROM `products` p WHERE p.id = ? AND p.is_active = 1 FOR UPDATE");
+            $authoritativeSubtotal = 0.0;
+            foreach ($cart as $item) {
+                $productStmt->execute([(int)$item['id']]);
+                $product = $productStmt->fetch();
+                $quantity = (int)$item['quantity'];
+                if (!$product || $quantity < 1 || $quantity > (int)$product['stock_quantity']) {
+                    throw new RuntimeException('One or more cart items are no longer available in the requested quantity.');
+                }
+                $unitPrice = (float)($product['sale_price'] ?: $product['price']);
+                $itemSubtotal = $unitPrice * $quantity;
+                $lockedItems[] = ['product' => $product, 'quantity' => $quantity, 'price' => $unitPrice, 'subtotal' => $itemSubtotal];
+                $authoritativeSubtotal += $itemSubtotal;
+            }
+
+            $couponResult = calculateCouponDiscount($_SESSION['applied_coupon'] ?? '', $authoritativeSubtotal);
+            $discountAmount = $couponResult['discount'];
+            $shipping = $authoritativeSubtotal >= 3000 ? 0.00 : 80.00;
+            $grandTotal = max(0, $authoritativeSubtotal - $discountAmount + $shipping);
             $orderNumber = generateOrderNumber();
             $userId = $user ? $user['id'] : null;
 
-            // If guest buyer, optionally create or link account
+            // Guest orders must not be attached to an existing account by a guessed phone number.
             if (!$userId) {
-                // Check if user exists by phone/email or create guest user
-                $chkUser = $db->prepare("SELECT id FROM `users` WHERE `phone` = ? LIMIT 1");
-                $chkUser->execute([$shippingPhone]);
-                $existingUser = $chkUser->fetch();
-                if ($existingUser) {
-                    $userId = $existingUser['id'];
-                } else {
-                    $dummyEmail = 'guest_' . time() . '_' . rand(100, 999) . '@haat.com.bd';
-                    $dummyPass = password_hash('Guest@123', PASSWORD_DEFAULT);
-                    $cUser = $db->prepare("INSERT INTO `users` (`name`, `email`, `password`, `phone`, `role`) VALUES (?, ?, ?, ?, 'customer')");
-                    $cUser->execute([$shippingName, $dummyEmail, $dummyPass, $shippingPhone]);
-                    $userId = $db->lastInsertId();
-                }
+                $dummyEmail = 'guest_' . bin2hex(random_bytes(8)) . '@haat.local';
+                $dummyPass = password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT);
+                $cUser = $db->prepare("INSERT INTO `users` (`name`, `email`, `password`, `phone`, `role`) VALUES (?, ?, ?, ?, 'customer')");
+                $cUser->execute([$shippingName, $dummyEmail, $dummyPass, $shippingPhone]);
+                $userId = $db->lastInsertId();
             }
 
             $paymentStatus = in_array($paymentMethod, ['bkash', 'nagad', 'rocket']) ? 'paid' : 'unpaid';
 
+            $trackingCode = 'HTX-' . rand(100000, 999999);
             $orderStmt = $db->prepare("INSERT INTO `orders` 
                 (`order_number`, `user_id`, `total_amount`, `shipping_cost`, `discount_amount`, `grand_total`, 
-                 `payment_method`, `payment_status`, `transaction_id`, `order_status`, `shipping_name`, `shipping_phone`, 
+                 `payment_method`, `payment_status`, `transaction_id`, `order_status`, `logistics_status`, `courier_partner`, `tracking_code`, `shipping_name`, `shipping_phone`, 
                  `shipping_address`, `district`, `division`, `notes`) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)");
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', 'HAATEX (HAAT Express Logistics)', ?, ?, ?, ?, ?, ?, ?)");
 
             $orderStmt->execute([
                 $orderNumber,
                 $userId,
-                $subtotal,
+                $authoritativeSubtotal,
                 $shipping,
                 $discountAmount,
                 $grandTotal,
                 $paymentMethod,
                 $paymentStatus,
                 $transactionId,
+                $trackingCode,
                 $shippingName,
                 $shippingPhone,
                 $shippingAddress,
@@ -106,32 +120,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 (`order_id`, `seller_id`, `product_id`, `product_name`, `price`, `quantity`, `subtotal`, `vendor_status`) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')");
 
-            foreach ($cart as $item) {
-                $itemSub = $item['price'] * $item['quantity'];
+            $stockStmt = $db->prepare("UPDATE `products` SET `stock_quantity` = `stock_quantity` - ? WHERE `id` = ? AND `stock_quantity` >= ?");
+            $salesStmt = $db->prepare("UPDATE `sellers` SET `total_sales` = `total_sales` + ? WHERE `id` = ?");
+            $sellerIdsNotified = [];
+            foreach ($lockedItems as $item) {
+                $product = $item['product'];
                 $itemStmt->execute([
                     $orderId,
-                    $item['seller_id'],
-                    $item['id'],
-                    $item['name'],
+                    $product['seller_id'],
+                    $product['id'],
+                    $product['name'],
                     $item['price'],
                     $item['quantity'],
-                    $itemSub
+                    $item['subtotal']
                 ]);
 
-                // Reduce product stock
-                $db->exec("UPDATE `products` SET `stock_quantity` = GREATEST(0, stock_quantity - " . (int)$item['quantity'] . ") WHERE `id` = " . (int)$item['id']);
-                
-                // Update seller total sales
-                $db->exec("UPDATE `sellers` SET `total_sales` = total_sales + {$itemSub} WHERE `id` = " . (int)$item['seller_id']);
+                $stockStmt->execute([$item['quantity'], $product['id'], $item['quantity']]);
+                if ($stockStmt->rowCount() !== 1) {
+                    throw new RuntimeException('Stock changed while your order was being placed. Please review your cart and try again.');
+                }
+                $salesStmt->execute([$item['subtotal'], $product['seller_id']]);
+
+                // Notify seller of newly confirmed order
+                $sId = (int)$product['seller_id'];
+                if (!in_array($sId, $sellerIdsNotified)) {
+                    $sellerIdsNotified[] = $sId;
+                    $sUser = $db->query("SELECT user_id FROM `sellers` WHERE `id` = {$sId}")->fetch();
+                    if ($sUser && !empty($sUser['user_id'])) {
+                        createNotification(
+                            $sUser['user_id'],
+                            "New Order Confirmed: #{$orderNumber}",
+                            "Customer placed a confirmed order for {$product['name']}. Please start crafting & packaging.",
+                            "seller_new_order",
+                            BASE_URL . "seller/#orders",
+                            $sId,
+                            $orderNumber
+                        );
+                    }
+                }
             }
 
             // Create initial tracking event in database
             $trStmt = $db->prepare("INSERT INTO `order_tracking_events` 
                 (`order_id`, `order_number`, `title`, `actor`, `location`, `status_key`, `note`, `created_at`) 
-                VALUES (?, ?, 'Order Received & Placed', 'HAAT Marketplace System', ?, 'pending', 'Customer order received and assigned to respective artisan guilds.', NOW())");
+                VALUES (?, ?, 'Order Confirmed & Placed', 'HAAT Marketplace System', ?, 'pending', 'Customer order confirmed and routed to artisan workshops for fulfillment.', NOW())");
             $trStmt->execute([$orderId, $orderNumber, $district . ', ' . $division]);
 
+            // Create notification for customer
+            createNotification(
+                $userId,
+                "Order Confirmed: #{$orderNumber}",
+                "Your artisanal order #{$orderNumber} has been placed successfully and routed to master workshops for handcrafted fulfillment.",
+                "order_confirmed",
+                BASE_URL . "track-order.php?order=" . urlencode($orderNumber),
+                null,
+                $orderNumber
+            );
+
             $db->commit();
+
+            if (!$user) {
+                $_SESSION['guest_orders'][$orderNumber] = true;
+            }
 
             // Clear Cart
             unset($_SESSION['cart']);

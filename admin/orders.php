@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order'])) {
     $up->execute([$orderStatus, $paymentStatus, $orderId]);
 
     // Also log tracking event
-    $ordInfo = $db->query("SELECT order_number, courier_partner FROM `orders` WHERE `id` = {$orderId}")->fetch();
+    $ordInfo = $db->query("SELECT user_id, order_number, courier_partner FROM `orders` WHERE `id` = {$orderId}")->fetch();
     if ($ordInfo) {
         $titles = [
             'pending' => 'Order Placed & Awaiting Fulfillment',
@@ -37,6 +37,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order'])) {
         ]);
         if ($orderStatus === 'delivered' || $orderStatus === 'shipped') {
             $db->prepare("UPDATE `order_items` SET `vendor_status` = ? WHERE `order_id` = ?")->execute([$orderStatus, $orderId]);
+        }
+
+        // Order Notifications
+        if ($orderStatus === 'shipped' || $orderStatus === 'delivered' || $orderStatus === 'cancelled') {
+            dismissOrderNotifications($ordInfo['order_number']);
+        } elseif ($orderStatus === 'processing') {
+            createNotification(
+                $ordInfo['user_id'],
+                "Crafting in Progress: #{$ordInfo['order_number']}",
+                "Artisans have begun preparing your handcrafted items.",
+                "order_processing",
+                BASE_URL . "track-order.php?order=" . urlencode($ordInfo['order_number']),
+                null,
+                $ordInfo['order_number']
+            );
         }
     }
 
@@ -127,10 +142,10 @@ require_once __DIR__ . '/../includes/header.php';
                 <button type="submit" name="update_order" class="btn btn-sm btn-outline-green" style="padding:4px 8px;" title="Update">
                   <i class="bi bi-check-lg"></i>
                 </button>
+                <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-clay" style="padding:4px 8px; margin-left:2px;" title="Print Official Invoice">
+                  <i class="bi bi-printer"></i>
+                </a>
               </form>
-              <a href="<?= BASE_URL ?>order-confirmation.php?order=<?= urlencode($ord['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-clay" style="margin-left:4px;" title="Invoice">
-                <i class="bi bi-printer"></i>
-              </a>
             </td>
           </tr>
         <?php endforeach; ?>

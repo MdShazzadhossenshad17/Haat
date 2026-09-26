@@ -107,6 +107,18 @@ All accounts are pre-seeded in [`db.sql`](db.sql). The passwords are ready out-o
    - *Or run via MySQL CLI:*
      ```bash
      mysql -u root -p < db.sql
+
+  ### Migration: Add `allow_self_purchase` (if upgrading)
+
+  If you are upgrading an existing database, run this non-destructive migration to add the per-seller setting:
+
+  ```sql
+  -- migrations/2026_09_25_add_allow_self_purchase.sql
+  ALTER TABLE `sellers`
+  ADD COLUMN `allow_self_purchase` TINYINT(1) NOT NULL DEFAULT 0 AFTER `is_verified`;
+  ```
+
+  Save the above SQL as `migrations/2026_09_25_add_allow_self_purchase.sql` and run it via `phpmyadmin` or MySQL CLI.
      ```
 
 4. **Verify Configuration**:

@@ -21,6 +21,13 @@ if (!$order) {
     exit;
 }
 
+if (!canAccessOrder($order)) {
+    http_response_code(403);
+    setFlash('danger', 'You are not authorized to view that order.');
+    header('Location: ' . BASE_URL);
+    exit;
+}
+
 // Fetch Items
 $itemStmt = $db->prepare("SELECT oi.*, s.shop_name, s.district as seller_district 
     FROM `order_items` oi 
@@ -52,9 +59,9 @@ require_once __DIR__ . '/includes/header.php';
       <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($order['order_number']) ?>" class="btn btn-clay">
         <i class="bi bi-truck"></i> Track Delivery Status
       </a>
-      <button onclick="window.print()" class="btn btn-outline-green">
+      <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($order['order_number']) ?>&print=1" target="_blank" class="btn btn-outline-green">
         <i class="bi bi-printer"></i> Print Invoice
-      </button>
+      </a>
       <a href="<?= BASE_URL ?>shop.php" class="btn btn-outline-clay">
         Continue Shopping
       </a>

@@ -33,6 +33,15 @@ if ($action === 'add') {
         exit;
     }
 
+    // Enforce strict marketplace rule: Sellers cannot purchase products (neither own nor others)
+    if (isLoggedIn() && isSeller()) {
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Seller accounts are for selling crafts and cannot make purchases. Please use a buyer account to purchase.'
+        ]);
+        exit;
+    }
+
     $added = addToCart($productId, $quantity);
     if ($added) {
         $cart = getCart();
@@ -53,10 +62,11 @@ if ($action === 'add') {
 if ($action === 'update') {
     $productId = (int)($payload['product_id'] ?? 0);
     $quantity = (int)($payload['quantity'] ?? 1);
-    updateCartQuantity($productId, $quantity);
+    $updated = updateCartQuantity($productId, $quantity);
 
     echo json_encode([
-        'success' => true,
+        'success' => $updated,
+        'message' => $updated ? 'Cart updated successfully.' : 'The requested quantity is no longer available.',
         'cart_count' => getCartCount(),
         'cart_subtotal' => formatPrice(getCartSubtotal())
     ]);

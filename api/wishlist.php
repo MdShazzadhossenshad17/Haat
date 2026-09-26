@@ -13,6 +13,12 @@ $payload = is_array($jsonData) ? array_merge($_REQUEST, $jsonData) : $_REQUEST;
 
 $action = $payload['action'] ?? ($_SERVER['REQUEST_METHOD'] === 'GET' ? 'get' : 'toggle');
 
+// Prevent sellers and admins from using customer wishlist APIs while logged in
+if (isLoggedIn() && (isSeller() || isAdmin())) {
+    echo json_encode(['success' => false, 'message' => 'Wishlist is a customer feature. Switch to a buyer account to use it.']);
+    exit;
+}
+
 if ($action === 'get') {
     $count = getWishlistCount();
     $items = getUserWishlistProducts();

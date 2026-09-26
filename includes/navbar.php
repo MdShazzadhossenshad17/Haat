@@ -154,11 +154,21 @@ $isHome = ($relPath === '' || $relPath === 'index.php') && empty($_SERVER['QUERY
 
     </div>
 
-    <!-- Become a Seller CTA -->
+    <!-- Account Context CTA -->
     <div style="display:flex; align-items:center;">
-      <a href="<?= BASE_URL ?>register.php?type=seller" class="btn btn-clay" style="height:40px; padding:0 18px; font-size:0.88rem; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:8px;">
-        <i class="bi bi-shop"></i> Become an Artisan Seller
-      </a>
+      <?php if (isSeller()): ?>
+        <a href="<?= BASE_URL ?>seller/" class="btn btn-clay" style="height:40px; padding:0 18px; font-size:0.88rem; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:8px;">
+          <i class="bi bi-speedometer2"></i> Seller Dashboard
+        </a>
+      <?php elseif (isAdmin()): ?>
+        <a href="<?= BASE_URL ?>admin/" class="btn btn-clay" style="height:40px; padding:0 18px; font-size:0.88rem; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:8px;">
+          <i class="bi bi-speedometer2"></i> Admin Panel
+        </a>
+      <?php else: ?>
+        <a href="<?= BASE_URL ?>register.php?type=seller" class="btn btn-clay" style="height:40px; padding:0 18px; font-size:0.88rem; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:8px;">
+          <i class="bi bi-shop"></i> Become an Artisan Seller
+        </a>
+      <?php endif; ?>
     </div>
 
   </div>

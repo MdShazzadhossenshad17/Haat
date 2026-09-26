@@ -11,8 +11,10 @@ if ($vendorId <= 0) {
     exit;
 }
 
-// Fetch Vendor Profile
-$stmt = $db->prepare("SELECT s.*, u.name as owner_name, u.email as owner_email 
+// Fetch Vendor Profile with live ratings
+$stmt = $db->prepare("SELECT s.*, u.name as owner_name, u.email as owner_email,
+    COALESCE((SELECT AVG(r.rating) FROM product_reviews r JOIN products p ON r.product_id = p.id WHERE p.seller_id = s.id), s.rating, 0.0) as live_rating,
+    (SELECT COUNT(r.id) FROM product_reviews r JOIN products p ON r.product_id = p.id WHERE p.seller_id = s.id) as review_count
     FROM `sellers` s 
     JOIN `users` u ON s.user_id = u.id 
     WHERE s.id = ? AND s.status = 'active' LIMIT 1");
@@ -24,14 +26,21 @@ if (!$seller) {
     exit;
 }
 
-// Fetch Seller Products
-$prodStmt = $db->prepare("SELECT p.*, c.name as category_name 
+// Fetch Seller Products with live product ratings
+$prodStmt = $db->prepare("SELECT p.*, c.name as category_name,
+    COALESCE((SELECT AVG(rating) FROM product_reviews WHERE product_id = p.id), p.rating, 0.0) as rating,
+    (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id) as review_count
     FROM `products` p 
     JOIN `categories` c ON p.category_id = c.id 
     WHERE p.seller_id = ? AND p.is_active = 1 
     ORDER BY p.id DESC");
 $prodStmt->execute([$vendorId]);
 $products = $prodStmt->fetchAll();
+
+// Check if visitor is the owner seller of this workshop
+$curSeller = currentSeller();
+$isOwnStore = ($curSeller && (int)$curSeller['id'] === (int)$seller['id']);
+$isAnySeller = isSeller();
 
 $pageTitle = $seller['shop_name'] . ' — Artisan Workshop';
 require_once __DIR__ . '/includes/header.php';
@@ -54,21 +63,33 @@ require_once __DIR__ . '/includes/header.php';
 
         <!-- Name & Meta -->
         <div style="flex:1; min-width:280px; padding-bottom:6px;">
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <h1 style="font-size:1.85rem; color:var(--haat-green-dark); margin:0; font-weight:800; line-height:1.2;">
-              <?= sanitize($seller['shop_name']) ?>
-            </h1>
-            <?php if ($seller['is_verified']): ?>
-              <span class="badge badge-green" style="font-size:0.75rem; padding:3px 8px; font-weight:600; display:inline-flex; align-items:center; gap:4px;">
-                <i class="bi bi-patch-check-fill"></i> Verified
-              </span>
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <h1 style="font-size:1.85rem; color:var(--haat-green-dark); margin:0; font-weight:800; line-height:1.2;">
+                <?= sanitize($seller['shop_name']) ?>
+              </h1>
+              <?php if (!empty($seller['is_verified'])): ?>
+                <span class="badge badge-green" style="font-size:0.75rem; padding:3px 8px; font-weight:600; display:inline-flex; align-items:center; gap:4px;">
+                  <i class="bi bi-patch-check-fill"></i> Verified
+                </span>
+              <?php endif; ?>
+            </div>
+            
+            <?php if (!$isAnySeller && !$isOwnStore): ?>
+              <a href="<?= BASE_URL ?>customer/?seller_id=<?= $seller['id'] ?>#messages" class="btn btn-sm btn-clay" style="display:inline-flex; align-items:center; gap:6px;">
+                <i class="bi bi-chat-dots-fill"></i> Message Artisan
+              </a>
+            <?php elseif ($isOwnStore): ?>
+              <a href="<?= BASE_URL ?>seller/" class="btn btn-sm btn-outline-green" style="display:inline-flex; align-items:center; gap:6px;">
+                <i class="bi bi-speedometer2"></i> Manage My Store
+              </a>
             <?php endif; ?>
           </div>
 
           <div style="font-size:0.88rem; color:var(--text-muted); display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-top:8px;">
             <span><i class="bi bi-geo-alt-fill text-clay"></i> <?= sanitize($seller['district']) ?>, <?= sanitize($seller['division']) ?></span>
             <span style="color:#d1d5db;">•</span>
-            <span class="text-gold" style="font-weight:700;"><i class="bi bi-star-fill"></i> <?= number_format($seller['rating'], 1) ?> Rating</span>
+            <span class="text-gold" style="font-weight:700;"><i class="bi bi-star-fill"></i> <?= number_format($seller['live_rating'], 1) ?> Rating (<?= (int)$seller['review_count'] ?> reviews)</span>
             <span style="color:#d1d5db;">•</span>
             <span><i class="bi bi-boxes" style="color:var(--haat-green);"></i> <?= count($products) ?> Products Listed</span>
           </div>
@@ -114,9 +135,11 @@ require_once __DIR__ . '/includes/header.php';
                 <span class="badge badge-gold">-<?= $discount ?>%</span>
               <?php endif; ?>
             </div>
+            <?php if (!isSeller() && !isAdmin()): ?>
             <button type="button" class="product-wishlist-btn <?= isInWishlist($prod['id']) ? 'active' : '' ?>" data-product-id="<?= $prod['id'] ?>" title="Save to Wishlist">
               <i class="bi <?= isInWishlist($prod['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($prod['id']) ? 'style="color:#e63946;"' : '' ?>></i>
             </button>
+            <?php endif; ?>
           </div>
 
           <div class="product-body">
@@ -128,6 +151,12 @@ require_once __DIR__ . '/includes/header.php';
             <a href="<?= BASE_URL ?>product.php?id=<?= $prod['id'] ?>" class="product-title">
               <?= sanitize($prod['name']) ?>
             </a>
+
+            <div class="product-rating" data-product-id="<?= $prod['id'] ?>" style="display:flex; align-items:center; gap:5px; font-size:0.82rem; margin-bottom:8px;">
+              <span style="color:#f59e0b; display:inline-flex; align-items:center; gap:2px;"><i class="bi bi-star-fill"></i></span>
+              <span class="product-avg" style="font-weight:700; color:var(--text-main);"><?= number_format($prod['rating'] ?? 0, 1) ?></span>
+              <small style="color:var(--text-muted);">(<span class="product-count"><?= (int)($prod['review_count'] ?? 0) ?></span>)</small>
+            </div>
 
             <div class="product-footer">
               <div class="price-wrap">

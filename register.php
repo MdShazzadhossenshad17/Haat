@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $slug = strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $shopName)) . '-' . rand(100, 999);
                     $insSeller = $db->prepare("INSERT INTO `sellers` 
                         (`user_id`, `shop_name`, `shop_slug`, `description`, `phone`, `district`, `division`, `bkash_number`, `is_verified`, `status`) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')");
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active')");
                     $insSeller->execute([$userId, $shopName, $slug, $description, $phone, $district, $division, $bkashNumber]);
                 }
 

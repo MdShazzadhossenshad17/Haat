@@ -44,7 +44,7 @@ function initCountdownTimer() {
 
 // Add to Cart AJAX
 function initAddToCartHandlers() {
-  document.querySelectorAll('.btn-add-cart, .btn-add-to-cart-page').forEach(btn => {
+  document.querySelectorAll('.btn-add-cart, .btn-add-cart-action, .btn-add-to-cart-page').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       const productId = btn.dataset.productId;
@@ -74,8 +74,8 @@ function initAddToCartHandlers() {
           showToast(data.message || 'Could not add item', 'danger');
         }
       } catch (err) {
-        showToast('Item added to cart!', 'success');
-        setTimeout(() => location.reload(), 600);
+        console.error('Add to cart failed (network/error):', err);
+        showToast('Could not add item to cart. Please try again.', 'danger');
       }
     });
   });

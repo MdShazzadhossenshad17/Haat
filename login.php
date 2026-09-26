@@ -30,6 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($user['status'] === 'suspended') {
                 $error = 'Your account has been suspended. Please contact HAAT support.';
             } else {
+                session_regenerate_id(true);
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['user_role'] = $user['role'];
                 $_SESSION['user_name'] = $user['name'];
@@ -49,6 +50,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($user['role'] === 'admin') {
                     header('Location: ' . BASE_URL . 'admin/');
+                } elseif ($user['role'] === 'logistics') {
+                    header('Location: ' . BASE_URL . 'logistics/');
                 } elseif ($user['role'] === 'seller') {
                     header('Location: ' . BASE_URL . 'seller/');
                 } else {
@@ -88,11 +91,20 @@ require_once __DIR__ . '/includes/header.php';
         <button type="button" onclick="fillLogin('admin@haat.com.bd', 'Admin@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start;">
           ⚙️ <strong>Admin Portal:</strong> admin@haat.com.bd (Admin@123)
         </button>
+        <button type="button" onclick="fillLogin('logistics@haat.com.bd', 'Logistics@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start; color:var(--haat-clay); font-weight:700;">
+          🚚 <strong>Admin Logistics (HAATEX):</strong> logistics@haat.com.bd (Logistics@123)
+        </button>
         <button type="button" onclick="fillLogin('jamdani@haat.com.bd', 'Seller@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start;">
-          🏪 <strong>Artisan Seller:</strong> jamdani@haat.com.bd (Seller@123)
+          🧵 <strong>Artisan Seller (Sonargaon Jamdani):</strong> jamdani@haat.com.bd (Seller@123)
+        </button>
+        <button type="button" onclick="fillLogin('honey@haat.com.bd', 'Seller@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start;">
+          🍯 <strong>Artisan Seller (Sundarbans Honey):</strong> honey@haat.com.bd (Seller@123)
+        </button>
+        <button type="button" onclick="fillLogin('pottery@haat.com.bd', 'Seller@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start;">
+          🏺 <strong>Artisan Seller (Bijoypur Pottery):</strong> pottery@haat.com.bd (Seller@123)
         </button>
         <button type="button" onclick="fillLogin('customer@haat.com.bd', 'Customer@123')" class="btn btn-sm" style="background:#fff; border:1px solid var(--haat-border); justify-content:flex-start;">
-          👤 <strong>Customer Buyer:</strong> customer@haat.com.bd (Customer@123)
+          👤 <strong>Customer Buyer (Tanvir Hossain):</strong> customer@haat.com.bd (Customer@123)
         </button>
       </div>
     </div>

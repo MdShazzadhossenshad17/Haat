@@ -65,8 +65,24 @@ if (isset($_GET['delete_coupon'])) {
 }
 
 // ==========================================
-// 4. GET ACTION: TOGGLE SELLER VERIFICATION
+// 4. GET ACTION: TOGGLE / APPROVE / REVOKE SELLER VERIFICATION
 // ==========================================
+if (isset($_GET['approve_verify'])) {
+    $sid = (int)$_GET['approve_verify'];
+    $db->prepare("UPDATE `sellers` SET `is_verified` = 1 WHERE `id` = ?")->execute([$sid]);
+    setFlash('success', 'Artisan workshop officially verified! GI Verified Badge is now active across store and products.');
+    header('Location: ' . BASE_URL . 'admin/#sellers');
+    exit;
+}
+
+if (isset($_GET['revoke_verify'])) {
+    $sid = (int)$_GET['revoke_verify'];
+    $db->prepare("UPDATE `sellers` SET `is_verified` = 0 WHERE `id` = ?")->execute([$sid]);
+    setFlash('success', 'GI Verification badge revoked. Workshop set to pending verification.');
+    header('Location: ' . BASE_URL . 'admin/#sellers');
+    exit;
+}
+
 if (isset($_GET['toggle_verify'])) {
     $sid = (int)$_GET['toggle_verify'];
     $db->prepare("UPDATE `sellers` SET `is_verified` = NOT `is_verified` WHERE `id` = ?")->execute([$sid]);
@@ -208,7 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_admin_update_o
     $up->execute([$orderStatus, $paymentStatus, $orderId]);
 
     // Push tracking event
-    $ordInfo = $db->query("SELECT order_number, courier_partner FROM `orders` WHERE `id` = {$orderId}")->fetch();
+    $ordInfo = $db->query("SELECT user_id, order_number, courier_partner FROM `orders` WHERE `id` = {$orderId}")->fetch();
     if ($ordInfo) {
         $titles = [
             'pending' => 'Order Placed & Awaiting Fulfillment',
@@ -229,6 +245,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_admin_update_o
         ]);
         if ($orderStatus === 'delivered' || $orderStatus === 'shipped') {
             $db->prepare("UPDATE `order_items` SET `vendor_status` = ? WHERE `order_id` = ?")->execute([$orderStatus, $orderId]);
+        }
+
+        // Order Notifications
+        if ($orderStatus === 'shipped' || $orderStatus === 'delivered' || $orderStatus === 'cancelled') {
+            dismissOrderNotifications($ordInfo['order_number']);
+        } elseif ($orderStatus === 'processing') {
+            createNotification(
+                $ordInfo['user_id'],
+                "Crafting in Progress: #{$ordInfo['order_number']}",
+                "Artisans have begun preparing your handcrafted items.",
+                "order_processing",
+                BASE_URL . "track-order.php?order=" . urlencode($ordInfo['order_number']),
+                null,
+                $ordInfo['order_number']
+            );
         }
     }
 
@@ -251,6 +282,52 @@ if (isset($_GET['toggle_user_status'])) {
 }
 
 // ==========================================
+// 11. GET ACTION: TOGGLE RIDER DUTY STATUS
+// ==========================================
+if (isset($_GET['toggle_rider_duty'])) {
+    $rid = (int)$_GET['toggle_rider_duty'];
+    $rStatus = $db->query("SELECT status FROM `riders` WHERE `id` = {$rid}")->fetchColumn();
+    $newRStatus = ($rStatus === 'active') ? 'inactive' : 'active';
+    $db->prepare("UPDATE `riders` SET `status` = ? WHERE `id` = ?")->execute([$newRStatus, $rid]);
+    setFlash('success', 'HAATEX Rider duty status changed to ' . ucfirst($newRStatus) . '.');
+    header('Location: ' . BASE_URL . 'admin/#haatex');
+    exit;
+}
+
+// ==========================================
+// 12. POST ACTION: ADD NEW HAATEX RIDER
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_add_rider'])) {
+    $rName = trim($_POST['rider_name'] ?? '');
+    $rPhone = trim($_POST['rider_phone'] ?? '');
+    $rZone = trim($_POST['hub_zone'] ?? 'Dhaka North & Central Hub');
+    $rVehicle = trim($_POST['vehicle_type'] ?? 'Motorbike');
+
+    if (!empty($rName) && !empty($rPhone)) {
+        $ins = $db->prepare("INSERT INTO `riders` (`name`, `phone`, `hub_zone`, `vehicle_type`, `status`, `active_deliveries`, `created_at`) VALUES (?, ?, ?, ?, 'active', 0, NOW())");
+        $ins->execute([$rName, $rPhone, $rZone, $rVehicle]);
+        setFlash('success', 'New HAATEX courier ' . htmlspecialchars($rName) . ' added to fleet successfully.');
+        header('Location: ' . BASE_URL . 'admin/#haatex');
+        exit;
+    } else {
+        setFlash('error', 'Please provide rider name and contact phone number.');
+        header('Location: ' . BASE_URL . 'admin/#haatex');
+        exit;
+    }
+}
+
+// ==========================================
+// 13. GET ACTION: DELETE RIDER
+// ==========================================
+if (isset($_GET['delete_rider'])) {
+    $rid = (int)$_GET['delete_rider'];
+    $db->prepare("DELETE FROM `riders` WHERE `id` = ?")->execute([$rid]);
+    setFlash('success', 'Rider profile removed from HAATEX courier fleet.');
+    header('Location: ' . BASE_URL . 'admin/#haatex');
+    exit;
+}
+
+// ==========================================
 // DATA QUERIES
 // ==========================================
 
@@ -266,6 +343,14 @@ $totalSellers = (int)$db->query("SELECT COUNT(*) FROM `sellers`")->fetchColumn()
 $totalProducts = (int)$db->query("SELECT COUNT(*) FROM `products`")->fetchColumn();
 $totalCategories = (int)$db->query("SELECT COUNT(*) FROM `categories`")->fetchColumn();
 $totalUsers = (int)$db->query("SELECT COUNT(*) FROM `users`")->fetchColumn();
+
+// HAATEX Logistics Analytics
+$haatexRiders = $db->query("SELECT * FROM `riders` ORDER BY id ASC")->fetchAll();
+$haatexActiveRiders = (int)$db->query("SELECT COUNT(*) FROM `riders` WHERE `status` = 'active'")->fetchColumn();
+$haatexPipelineCount = (int)$db->query("SELECT COUNT(*) FROM `orders` WHERE `logistics_status` IN ('pending', 'pickup_requested', 'hub_received', 'out_for_delivery')")->fetchColumn();
+$haatexDeliveredCount = (int)$db->query("SELECT COUNT(*) FROM `orders` WHERE `logistics_status` = 'delivered' OR `order_status` = 'delivered'")->fetchColumn();
+$haatexOutForDeliveryCount = (int)$db->query("SELECT COUNT(*) FROM `orders` WHERE `logistics_status` = 'out_for_delivery'")->fetchColumn();
+$haatexOrders = $db->query("SELECT * FROM `orders` WHERE `courier_partner` LIKE '%HAATEX%' OR `logistics_status` != 'pending' OR `tracking_code` IS NOT NULL ORDER BY id DESC")->fetchAll();
 
 // Recent Platform Orders for Overview
 $recentOrders = $db->query("SELECT * FROM `orders` ORDER BY id DESC LIMIT 6")->fetchAll();
@@ -301,6 +386,16 @@ $sellersList = $db->query("SELECT s.*, u.name as owner_name, u.email as owner_em
     FROM `sellers` s 
     JOIN `users` u ON s.user_id = u.id 
     ORDER BY s.id DESC")->fetchAll();
+
+$pendingSellersCount = 0;
+$verifiedSellersCount = 0;
+foreach ($sellersList as $s) {
+    if (!empty($s['is_verified'])) {
+        $verifiedSellersCount++;
+    } else {
+        $pendingSellersCount++;
+    }
+}
 
 // All Products for "All Products" Tab
 $productsList = $db->query("SELECT p.*, s.shop_name, s.district as seller_district, c.name as category_name 
@@ -421,6 +516,12 @@ require_once __DIR__ . '/../includes/header.php';
           <span>Platform Orders (<?= $totalOrders ?>)</span>
         </a>
 
+        <!-- HAATEX Logistics Hub (IN-PAGE RIGHT SIDE) -->
+        <a href="#haatex" class="admin-tab-link" data-tab="haatex">
+          <i class="bi bi-truck"></i>
+          <span>HAATEX Logistics (<?= count($haatexRiders) ?>)</span>
+        </a>
+
         <!-- Store Analytics -->
         <a href="#analytics" class="admin-tab-link" data-tab="analytics">
           <i class="bi bi-graph-up-arrow"></i>
@@ -494,76 +595,90 @@ require_once __DIR__ . '/../includes/header.php';
           </div>
         </div>
 
-        <!-- Clean Status Bar -->
-        <div style="background:var(--haat-cream); border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:16px 20px; margin-bottom:24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
-          <strong style="color:var(--haat-green-dark); font-size:0.95rem;">Artisan Marketplace Status: 🟢 Fully Operational</strong>
-          <div style="display:flex; gap:10px;">
-            <button type="button" onclick="switchAdminTab('sellers')" class="btn btn-sm btn-outline-green">Review Sellers</button>
-          </div>
-        </div>
-
-        <!-- Latest Orders on Platform -->
-        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm);">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
-            <h3 style="font-size:1.2rem; color:var(--haat-green-dark); margin:0;">Latest Marketplace Orders</h3>
-            <button type="button" onclick="switchAdminTab('analytics')" class="btn btn-sm btn-outline-green">
-              View Store Revenue &rarr;
+        <!-- Artisan Workshop Stores Overview -->
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm); margin-bottom:24px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+            <div>
+              <h3 style="font-size:1.2rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
+                <i class="bi bi-shop text-clay"></i> Artisan Workshop Stores Overview (<?= count($sellersList) ?>)
+              </h3>
+              <p style="color:var(--text-muted); font-size:0.85rem; margin:3px 0 0;">
+                Verified master craft guilds, artisan workshops, and direct regional producers across Bangladesh.
+              </p>
+            </div>
+            <button type="button" onclick="switchAdminTab('sellers')" class="btn btn-sm btn-outline-green">
+              Manage All Sellers &rarr;
             </button>
           </div>
 
-          <?php if (empty($recentOrders)): ?>
-            <p style="color:var(--text-muted); text-align:center; padding:30px 0;">No marketplace orders logged yet.</p>
-          <?php else: ?>
-            <div style="overflow-x:auto;">
-              <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
-                <thead>
-                  <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.82rem; text-transform:uppercase;">
-                    <th style="padding:10px 0;">Order #</th>
-                    <th style="padding:10px 0;">Customer</th>
-                    <th style="padding:10px 0;">Grand Total</th>
-                    <th style="padding:10px 0;">Payment</th>
-                    <th style="padding:10px 0;">Status</th>
-                    <th style="padding:10px 0; text-align:right;">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <?php foreach ($recentOrders as $ro): ?>
-                    <tr style="border-bottom:1px solid var(--haat-border);">
-                      <td style="padding:14px 0; font-weight:700; color:var(--haat-green-dark);">
-                        <?= sanitize($ro['order_number']) ?>
-                        <div style="font-size:0.75rem; color:var(--text-muted); font-weight:400;"><?= date('d M Y, h:i A', strtotime($ro['created_at'])) ?></div>
-                      </td>
-                      <td style="padding:14px 0;">
-                        <strong><?= sanitize($ro['shipping_name']) ?></strong>
-                        <div style="font-size:0.75rem; color:var(--text-muted);"><?= sanitize($ro['district']) ?></div>
-                      </td>
-                      <td style="padding:14px 0; font-weight:800; color:var(--haat-green);">
-                        <?= formatPrice($ro['grand_total']) ?>
-                      </td>
-                      <td style="padding:14px 0;">
-                        <span class="pay-badge pay-<?= $ro['payment_method'] ?>" style="font-size:0.75rem;">
-                          <?= strtoupper($ro['payment_method']) ?>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+              <thead>
+                <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.82rem; text-transform:uppercase;">
+                  <th style="padding:12px 10px;">Shop & Master Artisan</th>
+                  <th style="padding:12px 10px;">District & Region</th>
+                  <th style="padding:12px 10px;">GI Verification</th>
+                  <th style="padding:12px 10px;">Crafts Catalog</th>
+                  <th style="padding:12px 10px;">Gross Revenue</th>
+                  <th style="padding:12px 10px;">Status</th>
+                  <th style="padding:12px 10px; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($sellersList as $s): ?>
+                  <tr style="border-bottom:1px solid var(--haat-border);">
+                    <td style="padding:14px 10px;">
+                      <div style="display:flex; align-items:center; gap:10px;">
+                        <div style="width:36px; height:36px; border-radius:50%; background:var(--haat-sand); color:var(--haat-green); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.95rem; border:1px solid var(--haat-border);">
+                          <?= strtoupper(substr($s['shop_name'], 0, 1)) ?>
+                        </div>
+                        <div>
+                          <strong style="color:var(--haat-green-dark); font-size:0.92rem;"><?= sanitize($s['shop_name']) ?></strong>
+                          <div style="font-size:0.75rem; color:var(--text-muted);"><?= sanitize($s['owner_name']) ?> (<?= sanitize($s['owner_email']) ?>)</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td style="padding:14px 10px;">
+                      <span style="font-weight:600; color:var(--haat-clay);"><?= sanitize($s['district']) ?></span>
+                      <div style="font-size:0.75rem; color:var(--text-muted);"><?= sanitize($s['division']) ?> Division</div>
+                    </td>
+                    <td style="padding:14px 10px;">
+                      <?php if ($s['is_verified']): ?>
+                        <span class="badge" style="background:#e8f5e9; color:#166534; font-size:0.78rem; font-weight:700; padding:3px 8px; border-radius:4px;">
+                          <i class="bi bi-patch-check-fill"></i> GI Verified
                         </span>
-                        <span style="font-size:0.75rem; display:block; color:var(--text-muted); margin-top:2px;">
-                          <?= ucfirst($ro['payment_status']) ?>
+                      <?php else: ?>
+                        <span class="badge" style="background:#fef3c7; color:#92400e; font-size:0.78rem; font-weight:700; padding:3px 8px; border-radius:4px;">
+                          <i class="bi bi-clock-history"></i> Pending Audit
                         </span>
-                      </td>
-                      <td style="padding:14px 0;">
-                        <span class="badge badge-<?= $ro['order_status'] === 'delivered' ? 'green' : ($ro['order_status'] === 'pending' ? 'gold' : 'clay') ?>">
-                          <?= ucfirst($ro['order_status']) ?>
-                        </span>
-                      </td>
-                      <td style="padding:14px 0; text-align:right;">
-                        <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ro['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.8rem;">
-                          Track
+                      <?php endif; ?>
+                    </td>
+                    <td style="padding:14px 10px; font-weight:700; color:var(--haat-green-dark);">
+                      <?= (int)$s['product_count'] ?> Crafts
+                    </td>
+                    <td style="padding:14px 10px; font-weight:800; color:var(--haat-green);">
+                      <?= formatPrice($s['total_sales'] ?: 0) ?>
+                    </td>
+                    <td style="padding:14px 10px;">
+                      <span class="badge badge-<?= $s['status'] === 'active' ? 'green' : 'clay' ?>" style="font-size:0.78rem;">
+                        <?= ucfirst($s['status']) ?>
+                      </span>
+                    </td>
+                    <td style="padding:14px 10px; text-align:right;">
+                      <div style="display:inline-flex; gap:6px;">
+                        <button type="button" onclick="switchAdminTab('sellers'); setTimeout(() => openSellerVerifyModal(<?= htmlspecialchars(json_encode($s), ENT_QUOTES, 'UTF-8') ?>), 100);" class="btn btn-sm btn-outline-green" style="padding:3px 8px; font-size:0.78rem;" title="Inspect & Verify">
+                          <i class="bi bi-shield-check"></i> Verify
+                        </button>
+                        <a href="<?= BASE_URL ?>vendor.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-sm btn-clay" style="padding:3px 8px; font-size:0.78rem;">
+                          Store
                         </a>
-                      </td>
-                    </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-          <?php endif; ?>
+                      </div>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
         </div>
 
       </div>
@@ -942,19 +1057,41 @@ require_once __DIR__ . '/../includes/header.php';
       <div id="panel-sellers" class="admin-panel">
         <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); padding:26px; box-shadow:var(--shadow-sm);">
           
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; border-bottom:1px solid var(--haat-border); padding-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid var(--haat-border); padding-bottom:18px; flex-wrap:wrap; gap:16px;">
             <div>
               <h2 style="font-size:1.35rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
-                <i class="bi bi-shop text-clay"></i> Manage Artisan Guilds & Sellers
+                <i class="bi bi-patch-check-fill text-clay"></i> Manage Artisan Guilds & GI Verification
               </h2>
               <p style="color:var(--text-muted); font-size:0.85rem; margin:3px 0 0;">
-                Review workshop credentials, grant verified GI badges, and oversee vendor account statuses.
+                Audit workshop credentials, verify Geographical Indication (GI) heritage crafts, and issue verified storefront badges.
               </p>
+            </div>
+
+            <!-- Verification Filter Tabs -->
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <button type="button" onclick="filterSellersTable('all', this)" class="btn btn-sm seller-filter-btn active" style="font-weight:700; border-radius:20px; padding:6px 14px; background:var(--haat-green-dark); color:#fff; border:1px solid var(--haat-green-dark); cursor:pointer;">
+                All Workshops (<?= count($sellersList) ?>)
+              </button>
+              <button type="button" onclick="filterSellersTable('pending', this)" class="btn btn-sm seller-filter-btn" style="font-weight:700; border-radius:20px; padding:6px 14px; background:#fef3c7; color:#92400e; border:1px solid #fde68a; cursor:pointer;">
+                <i class="bi bi-clock-history"></i> Pending Verification (<?= $pendingSellersCount ?>)
+              </button>
+              <button type="button" onclick="filterSellersTable('verified', this)" class="btn btn-sm seller-filter-btn" style="font-weight:700; border-radius:20px; padding:6px 14px; background:#e8f5e9; color:#166534; border:1px solid #bbf7d0; cursor:pointer;">
+                <i class="bi bi-patch-check-fill"></i> GI Verified (<?= $verifiedSellersCount ?>)
+              </button>
             </div>
           </div>
 
+          <!-- Quick Search Bar -->
+          <div style="margin-bottom:18px; display:flex; gap:12px; align-items:center;">
+            <div style="position:relative; flex:1; max-width:400px;">
+              <i class="bi bi-search" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--text-muted);"></i>
+              <input type="text" id="sellerSearchInput" onkeyup="searchSellersTable()" placeholder="Search workshop, craftsman, district..." style="width:100%; padding:8px 12px 8px 36px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.88rem;">
+            </div>
+            <span style="font-size:0.82rem; color:var(--text-muted);">Showing <strong id="visibleSellersCount"><?= count($sellersList) ?></strong> workshop(s)</span>
+          </div>
+
           <div style="overflow-x:auto;">
-            <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+            <table id="sellersMainTable" style="width:100%; border-collapse:collapse; font-size:0.92rem;">
               <thead>
                 <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.82rem; text-transform:uppercase;">
                   <th style="padding:12px 10px;">Artisan Workshop</th>
@@ -962,19 +1099,19 @@ require_once __DIR__ . '/../includes/header.php';
                   <th style="padding:12px 10px;">Origin District</th>
                   <th style="padding:12px 10px;">bKash Payout</th>
                   <th style="padding:12px 10px;">Total Sales</th>
-                  <th style="padding:12px 10px;">GI Verified</th>
-                  <th style="padding:12px 10px;">Status</th>
+                  <th style="padding:12px 10px;">Verification Status</th>
+                  <th style="padding:12px 10px;">Account</th>
                   <th style="padding:12px 10px; text-align:right;">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 <?php foreach ($sellersList as $s): ?>
-                  <tr style="border-bottom:1px solid var(--haat-border);">
+                  <tr class="seller-table-row" data-verified="<?= $s['is_verified'] ? '1' : '0' ?>" data-search="<?= strtolower(sanitize($s['shop_name'] . ' ' . $s['owner_name'] . ' ' . $s['district'] . ' ' . $s['division'])) ?>" style="border-bottom:1px solid var(--haat-border);">
                     <td style="padding:14px 10px;">
-                      <a href="<?= BASE_URL ?>vendor.php?id=<?= $s['id'] ?>" target="_blank" style="font-weight:700; color:var(--haat-green-dark); display:block;">
+                      <a href="<?= BASE_URL ?>vendor.php?id=<?= $s['id'] ?>" target="_blank" style="font-weight:700; color:var(--haat-green-dark); display:block; text-decoration:none;">
                         <?= sanitize($s['shop_name']) ?>
                       </a>
-                      <span style="font-size:0.75rem; color:var(--text-muted);"><?= $s['product_count'] ?> Products • <?= number_format($s['rating'], 1) ?> ★</span>
+                      <span style="font-size:0.75rem; color:var(--text-muted);"><?= $s['product_count'] ?> Crafts • <?= number_format($s['rating'], 1) ?> ★</span>
                     </td>
                     <td style="padding:14px 10px; font-size:0.85rem;">
                       <strong><?= sanitize($s['owner_name']) ?></strong><br>
@@ -983,7 +1120,7 @@ require_once __DIR__ . '/../includes/header.php';
                     </td>
                     <td style="padding:14px 10px;">
                       <span class="district-tag"><?= sanitize($s['district']) ?></span>
-                      <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;"><?= sanitize($s['division']) ?></div>
+                      <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;"><?= sanitize($s['division']) ?> Division</div>
                     </td>
                     <td style="padding:14px 10px; font-size:0.85rem; font-weight:600; color:#e2136e;">
                       <?= sanitize($s['bkash_number'] ?: 'Not added') ?>
@@ -992,13 +1129,15 @@ require_once __DIR__ . '/../includes/header.php';
                       <?= formatPrice($s['total_sales']) ?>
                     </td>
                     <td style="padding:14px 10px;">
-                      <a href="<?= BASE_URL ?>admin/?toggle_verify=<?= $s['id'] ?>" title="Click to toggle verification">
-                        <?php if ($s['is_verified']): ?>
-                          <span class="badge badge-green"><i class="bi bi-patch-check-fill"></i> Verified</span>
-                        <?php else: ?>
-                          <span class="badge badge-gold">Unverified</span>
-                        <?php endif; ?>
-                      </a>
+                      <?php if ($s['is_verified']): ?>
+                        <span class="badge" style="background:#e8f5e9; color:#166534; font-size:0.8rem; font-weight:700; padding:4px 8px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                          <i class="bi bi-patch-check-fill"></i> GI Verified
+                        </span>
+                      <?php else: ?>
+                        <span class="badge" style="background:#fef3c7; color:#92400e; font-size:0.8rem; font-weight:700; padding:4px 8px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                          <i class="bi bi-clock-history"></i> Pending Audit
+                        </span>
+                      <?php endif; ?>
                     </td>
                     <td style="padding:14px 10px;">
                       <span class="badge badge-<?= $s['status'] === 'active' ? 'green' : 'clay' ?>">
@@ -1006,12 +1145,17 @@ require_once __DIR__ . '/../includes/header.php';
                       </span>
                     </td>
                     <td style="padding:14px 10px; text-align:right; white-space:nowrap;">
-                      <a href="<?= BASE_URL ?>vendor.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-sm btn-outline-green" style="margin-right:4px;">
-                        View
-                      </a>
-                      <a href="<?= BASE_URL ?>admin/?toggle_status=<?= $s['id'] ?>" class="btn btn-sm <?= $s['status'] === 'active' ? 'btn-outline-clay' : 'btn-clay' ?>">
-                        <?= $s['status'] === 'active' ? 'Suspend' : 'Activate' ?>
-                      </a>
+                      <div style="display:inline-flex; gap:6px; align-items:center;">
+                        <button type="button" onclick="openSellerVerifyModal(<?= htmlspecialchars(json_encode($s), ENT_QUOTES, 'UTF-8') ?>)" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.8rem; font-weight:700;" title="Inspect & Verify Artisan Credentials">
+                          <i class="bi bi-shield-check"></i> Inspect & Verify
+                        </button>
+                        <a href="<?= BASE_URL ?>vendor.php?id=<?= $s['id'] ?>" target="_blank" class="btn btn-sm btn-clay" style="padding:4px 8px; font-size:0.8rem;" title="View Storefront">
+                          Store
+                        </a>
+                        <a href="<?= BASE_URL ?>admin/?toggle_status=<?= $s['id'] ?>" class="btn btn-sm <?= $s['status'] === 'active' ? 'btn-outline-clay' : 'btn-outline-green' ?>" style="padding:4px 8px; font-size:0.8rem;" title="Toggle Account Status">
+                          <?= $s['status'] === 'active' ? 'Suspend' : 'Activate' ?>
+                        </a>
+                      </div>
                     </td>
                   </tr>
                 <?php endforeach; ?>
@@ -1321,14 +1465,349 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
       </div>
 
+      <!-- ==========================================
+           TAB: HAATEX LOGISTICS & FLEET MANAGEMENT
+           ========================================== -->
+      <div id="panel-haatex" class="admin-panel" style="display:none;">
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:24px; box-shadow:var(--shadow-sm);">
+          
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; border-bottom:1px solid var(--haat-border); padding-bottom:16px; flex-wrap:wrap; gap:12px;">
+            <div>
+              <div style="display:inline-flex; align-items:center; gap:6px; background:#e8f5e9; color:#166534; font-size:0.75rem; font-weight:800; padding:3px 8px; border-radius:4px; margin-bottom:6px; text-transform:uppercase;">
+                <i class="bi bi-shield-check"></i> HAAT Owned Courier Network
+              </div>
+              <h2 style="font-size:1.35rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
+                <i class="bi bi-truck text-clay"></i> HAATEX Express Logistics & Fleet Command
+              </h2>
+              <p style="color:var(--text-muted); font-size:0.85rem; margin:3px 0 0;">
+                Comprehensive fleet operations, courier duty monitoring, and real-time parcel dispatch tracking.
+              </p>
+            </div>
+            
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a href="<?= BASE_URL ?>logistics/" target="_blank" class="btn btn-sm btn-clay" style="display:inline-flex; align-items:center; gap:6px;">
+                <i class="bi bi-box-arrow-up-right"></i> Open Operations Hub
+              </a>
+            </div>
+          </div>
+
+          <!-- HAATEX Key Fleet Metrics -->
+          <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin-bottom:28px;">
+            <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:16px;">
+              <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Active Couriers</div>
+              <div style="font-size:1.5rem; font-weight:800; color:var(--haat-green);"><?= $haatexActiveRiders ?> <span style="font-size:0.85rem; font-weight:500; color:var(--text-muted);">/ <?= count($haatexRiders) ?> Total</span></div>
+              <span style="font-size:0.72rem; color:#22c55e; font-weight:600;">🟢 On-Duty Today</span>
+            </div>
+
+            <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:16px;">
+              <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">In-Transit Pipeline</div>
+              <div style="font-size:1.5rem; font-weight:800; color:var(--haat-green-dark);"><?= $haatexPipelineCount ?></div>
+              <span style="font-size:0.72rem; color:var(--text-muted);">Hub Sorting & Transit</span>
+            </div>
+
+            <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:16px;">
+              <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Out For Delivery</div>
+              <div style="font-size:1.5rem; font-weight:800; color:var(--haat-clay);"><?= $haatexOutForDeliveryCount ?></div>
+              <span style="font-size:0.72rem; color:#d97008; font-weight:600;">Doorstep Dispatches</span>
+            </div>
+
+            <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:16px;">
+              <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Delivered Consignments</div>
+              <div style="font-size:1.5rem; font-weight:800; color:var(--haat-green);"><?= $haatexDeliveredCount ?></div>
+              <span style="font-size:0.72rem; color:var(--text-muted);">Successfully Fulfilled</span>
+            </div>
+          </div>
+
+          <!-- Section 1: HAATEX Fleet Table -->
+          <div style="margin-bottom:32px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+              <h3 style="font-size:1.1rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:6px;">
+                <i class="bi bi-person-badge text-clay"></i> Courier Rider Fleet (<?= count($haatexRiders) ?>)
+              </h3>
+            </div>
+
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+                <thead>
+                  <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.82rem; text-transform:uppercase;">
+                    <th style="padding:12px 10px;">Rider Details</th>
+                    <th style="padding:12px 10px;">Contact Phone</th>
+                    <th style="padding:12px 10px;">Vehicle</th>
+                    <th style="padding:12px 10px;">Hub Zone Coverage</th>
+                    <th style="padding:12px 10px;">Duty Status</th>
+                    <th style="padding:12px 10px;">Active Load</th>
+                    <th style="padding:12px 10px; text-align:right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php if (empty($haatexRiders)): ?>
+                    <tr>
+                      <td colspan="7" style="text-align:center; padding:30px; color:var(--text-muted);">No courier riders registered yet.</td>
+                    </tr>
+                  <?php else: ?>
+                    <?php foreach ($haatexRiders as $r): ?>
+                      <tr style="border-bottom:1px solid var(--haat-border);">
+                        <td style="padding:14px 10px;">
+                          <strong style="color:var(--haat-green-dark);"><?= sanitize($r['name']) ?></strong>
+                          <div style="font-size:0.72rem; color:var(--text-muted);">Rider #HTX-R<?= $r['id'] ?></div>
+                        </td>
+                        <td style="padding:14px 10px; font-weight:600;">
+                          <?= sanitize($r['phone']) ?>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <span class="badge" style="background:#f1eee9; color:var(--haat-green-dark); font-size:0.8rem;">
+                            <i class="bi bi-bicycle"></i> <?= sanitize($r['vehicle_type']) ?>
+                          </span>
+                        </td>
+                        <td style="padding:14px 10px; color:var(--text-muted); font-size:0.85rem;">
+                          <?= sanitize($r['hub_zone']) ?>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <?php if ($r['status'] === 'active'): ?>
+                            <span class="badge" style="background:#e8f5e9; color:#166534; font-size:0.78rem; font-weight:700; padding:3px 8px; border-radius:4px;">
+                              🟢 Active (On-Duty)
+                            </span>
+                          <?php else: ?>
+                            <span class="badge" style="background:#f3f4f6; color:#6b7280; font-size:0.78rem; font-weight:700; padding:3px 8px; border-radius:4px;">
+                              ⚪ Inactive (Off-Duty)
+                            </span>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding:14px 10px; font-weight:700; color:var(--haat-clay);">
+                          <?= (int)($r['active_deliveries'] ?? 0) ?> Parcels
+                        </td>
+                        <td style="padding:14px 10px; text-align:right;">
+                          <div style="display:inline-flex; gap:6px;">
+                            <a href="<?= BASE_URL ?>admin/?toggle_rider_duty=<?= $r['id'] ?>" class="btn btn-sm <?= $r['status'] === 'active' ? 'btn-outline-clay' : 'btn-outline-green' ?>" style="padding:3px 8px; font-size:0.78rem;">
+                              <?= $r['status'] === 'active' ? 'Set Off-Duty' : 'Set On-Duty' ?>
+                            </a>
+                            <a href="<?= BASE_URL ?>admin/?delete_rider=<?= $r['id'] ?>" onclick="return confirm('Remove rider <?= addslashes($r['name']) ?> from HAATEX fleet?');" class="btn btn-sm btn-outline-clay" style="padding:3px 8px; font-size:0.78rem;" title="Remove Rider">
+                              <i class="bi bi-trash"></i>
+                            </a>
+                          </div>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Section 2: Add New Rider Form -->
+          <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:20px; margin-bottom:32px;">
+            <h4 style="font-size:1rem; color:var(--haat-green-dark); margin:0 0 12px; display:flex; align-items:center; gap:6px;">
+              <i class="bi bi-person-plus text-clay"></i> Register New HAATEX Courier Rider
+            </h4>
+            <form method="POST" action="<?= BASE_URL ?>admin/index.php" style="display:grid; grid-template-columns: repeat(4, 1fr) auto; gap:12px; align-items:flex-end;">
+              <input type="hidden" name="action_add_rider" value="1">
+              
+              <div>
+                <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:block; margin-bottom:4px;">Rider Full Name</label>
+                <input type="text" name="rider_name" required placeholder="e.g. Shakil Ahmed" style="width:100%; padding:8px 10px; border:1px solid var(--haat-border); border-radius:4px; font-size:0.88rem;">
+              </div>
+
+              <div>
+                <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:block; margin-bottom:4px;">Contact Phone</label>
+                <input type="text" name="rider_phone" required placeholder="017XXXXXXXX" style="width:100%; padding:8px 10px; border:1px solid var(--haat-border); border-radius:4px; font-size:0.88rem;">
+              </div>
+
+              <div>
+                <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:block; margin-bottom:4px;">Hub Zone Coverage</label>
+                <input type="text" name="hub_zone" required placeholder="e.g. Uttara & Airport Zone" style="width:100%; padding:8px 10px; border:1px solid var(--haat-border); border-radius:4px; font-size:0.88rem;">
+              </div>
+
+              <div>
+                <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:block; margin-bottom:4px;">Vehicle Type</label>
+                <select name="vehicle_type" style="width:100%; padding:8px 10px; border:1px solid var(--haat-border); border-radius:4px; font-size:0.88rem; background:#fff;">
+                  <option value="Motorbike">Motorbike</option>
+                  <option value="Covered Van">Covered Van</option>
+                  <option value="Bicycle">Bicycle</option>
+                </select>
+              </div>
+
+              <div>
+                <button type="submit" class="btn btn-sm btn-clay" style="padding:9px 18px; font-weight:700;">
+                  <i class="bi bi-plus-lg"></i> Add Rider
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Section 3: Live Consignments & Tracking Registry -->
+          <div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+              <h3 style="font-size:1.1rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:6px;">
+                <i class="bi bi-box-seam text-clay"></i> Live Parcel Consignments & Tracking
+              </h3>
+            </div>
+
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+                <thead>
+                  <tr style="border-bottom:2px solid var(--haat-sand); text-align:left; color:var(--text-muted); font-size:0.82rem; text-transform:uppercase;">
+                    <th style="padding:12px 10px;">Order #</th>
+                    <th style="padding:12px 10px;">Customer & District</th>
+                    <th style="padding:12px 10px;">Assigned Courier</th>
+                    <th style="padding:12px 10px;">Tracking Code</th>
+                    <th style="padding:12px 10px;">Logistics Milestone</th>
+                    <th style="padding:12px 10px; text-align:right;">Tracking</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php if (empty($haatexOrders)): ?>
+                    <tr>
+                      <td colspan="6" style="text-align:center; padding:30px; color:var(--text-muted);">No active consignments logged in HAATEX pipeline.</td>
+                    </tr>
+                  <?php else: ?>
+                    <?php foreach ($haatexOrders as $ho): ?>
+                      <tr style="border-bottom:1px solid var(--haat-border);">
+                        <td style="padding:14px 10px; font-weight:700; color:var(--haat-green-dark);">
+                          <?= sanitize($ho['order_number']) ?>
+                          <div style="font-size:0.72rem; color:var(--text-muted);"><?= date('d M Y, h:i A', strtotime($ho['created_at'])) ?></div>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <strong><?= sanitize($ho['shipping_name']) ?></strong>
+                          <div style="font-size:0.72rem; color:var(--text-muted);"><?= sanitize($ho['district']) ?></div>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <?= sanitize($ho['assigned_rider_name'] ?: 'Pending Assignment') ?>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <span class="badge" style="background:#e8f5e9; color:#166534; font-family:monospace; font-size:0.85rem; font-weight:700;">
+                            <?= sanitize($ho['tracking_code'] ?: 'HTX-' . substr(md5($ho['order_number']), 0, 6)) ?>
+                          </span>
+                        </td>
+                        <td style="padding:14px 10px;">
+                          <span class="badge badge-<?= ($ho['logistics_status'] === 'delivered' || $ho['order_status'] === 'delivered') ? 'green' : (($ho['logistics_status'] === 'out_for_delivery') ? 'clay' : 'gold') ?>">
+                            <?= ucfirst(str_replace('_', ' ', $ho['logistics_status'] ?: $ho['order_status'])) ?>
+                          </span>
+                        </td>
+                        <td style="padding:14px 10px; text-align:right;">
+                          <a href="<?= BASE_URL ?>track-order.php?order=<?= urlencode($ho['order_number']) ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:4px 10px; font-size:0.78rem;">
+                            <i class="bi bi-geo-alt"></i> Track Live
+                          </a>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
     </main>
+  </div>
+</div>
+
+<!-- ==========================================
+     SELLER VERIFICATION INSPECTION MODAL
+     ========================================== -->
+<div id="sellerVerifyModal" style="display:none; position:fixed; inset:0; width:100vw; height:100vh; background:rgba(15, 23, 42, 0.75); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:999999; align-items:center; justify-content:center; padding:20px; box-sizing:border-box;">
+  <div style="background:#ffffff; border-radius:16px; max-width:680px; width:100%; max-height:86vh; display:flex; flex-direction:column; box-shadow:0 25px 50px -12px rgba(0,0,0,0.35); border:1px solid var(--haat-border); position:relative; overflow:hidden;">
+    
+    <!-- Modal Header (Fixed at top) -->
+    <div style="padding:16px 24px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#faf8f5; flex-shrink:0;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div style="width:38px; height:38px; border-radius:50%; background:#166534; color:#fff; display:flex; align-items:center; justify-content:center; font-size:1.15rem; flex-shrink:0;">
+          <i class="bi bi-patch-check-fill"></i>
+        </div>
+        <div>
+          <h3 style="margin:0; font-size:1.15rem; color:var(--haat-green-dark); font-weight:700; line-height:1.3;">Artisan Credentials & GI Verification</h3>
+          <p style="margin:2px 0 0; font-size:0.8rem; color:var(--text-muted); line-height:1.3;">Inspect workshop heritage registration & issue verified storefront sign</p>
+        </div>
+      </div>
+      <button type="button" onclick="closeSellerVerifyModal()" style="background:#f3f4f6; border:none; font-size:1.4rem; color:#4b5563; cursor:pointer; width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; transition:all 0.2s; flex-shrink:0;" onmouseover="this.style.background='#e5e7eb'" onmouseout="this.style.background='#f3f4f6'">&times;</button>
+    </div>
+
+    <!-- Modal Body (Internally Scrollable) -->
+    <div id="sellerVerifyModalBody" style="padding:20px 24px; overflow-y:auto; flex:1 1 auto; min-height:0;">
+      
+      <!-- Workshop Banner Header inside Modal -->
+      <div style="background:#f4f1eb; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:16px 18px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <div>
+          <h4 id="modalShopName" style="margin:0 0 4px; color:var(--haat-green-dark); font-size:1.15rem; font-weight:700;">-</h4>
+          <span id="modalLocation" style="font-size:0.82rem; color:var(--haat-clay); font-weight:600;">-</span>
+        </div>
+        <div id="modalStatusBadge">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Info Grid -->
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:18px;">
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">Master Craftsman / Owner</span>
+          <strong id="modalOwnerName" style="color:var(--haat-green-dark); font-size:0.92rem;">-</strong>
+        </div>
+
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">Contact Phone & Email</span>
+          <span id="modalContact" style="font-size:0.88rem; color:var(--text-main);">-</span>
+        </div>
+
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">Workshop Physical Address</span>
+          <span id="modalAddress" style="font-size:0.88rem; color:var(--text-main);">-</span>
+        </div>
+
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">Payout & Mobile Banking</span>
+          <strong id="modalPayout" style="color:#e2136e; font-size:0.92rem;">-</strong>
+        </div>
+
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">National ID / NID Number</span>
+          <span id="modalNid" style="font-size:0.88rem; color:var(--text-main); font-family:monospace;">-</span>
+        </div>
+
+        <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:12px;">
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:3px;">Trade License / Guild Reg</span>
+          <span id="modalTrade" style="font-size:0.88rem; color:var(--text-main); font-family:monospace;">-</span>
+        </div>
+      </div>
+
+      <!-- Description / Craft Story -->
+      <div style="background:#faf8f5; border:1px solid var(--haat-border); border-radius:var(--radius-sm); padding:14px; margin-bottom:18px;">
+        <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); font-weight:700; display:block; margin-bottom:4px;">Craft Heritage Bio & Description</span>
+        <p id="modalBio" style="font-size:0.88rem; color:var(--text-main); margin:0; line-height:1.5;">-</p>
+      </div>
+
+      <!-- Notice Box -->
+      <div id="modalNoticeBox" style="padding:12px 14px; border-radius:var(--radius-sm); font-size:0.85rem; display:flex; align-items:flex-start; gap:10px;">
+        <i id="modalNoticeIcon" class="bi bi-info-circle-fill" style="font-size:1.1rem; margin-top:2px;"></i>
+        <div id="modalNoticeText">-</div>
+      </div>
+
+    </div>
+
+    <!-- Modal Footer (Fixed at bottom) -->
+    <div style="padding:14px 24px; border-top:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#faf8f5; flex-shrink:0; flex-wrap:wrap; gap:12px;">
+      <a id="modalViewStoreLink" href="#" target="_blank" class="btn btn-sm btn-outline-green" style="display:inline-flex; align-items:center; gap:6px;">
+        <i class="bi bi-shop"></i> View Storefront
+      </a>
+
+      <div style="display:flex; gap:10px;">
+        <button type="button" onclick="closeSellerVerifyModal()" class="btn btn-sm" style="background:#f3f4f6; color:#4b5563; border:1px solid #d1d5db; padding:8px 16px; border-radius:var(--radius-sm); font-weight:600; cursor:pointer;">
+          Close
+        </button>
+        
+        <a id="modalActionBtn" href="#" class="btn btn-sm" style="font-weight:700; padding:8px 18px; border-radius:var(--radius-sm); text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+          <!-- Dynamic button -->
+        </a>
+      </div>
+    </div>
+
   </div>
 </div>
 
 <script>
   // Unified Admin Tab Switching
   function switchAdminTab(tabId) {
-    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'haatex', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (!validTabs.includes(tabId)) {
       tabId = 'overview';
     }
@@ -1359,10 +1838,149 @@ require_once __DIR__ . '/../includes/header.php';
     window.location.hash = tabId;
   }
 
+  // Seller Filter Functions
+  let currentSellerFilter = 'all';
+
+  function filterSellersTable(type, btnElement) {
+    currentSellerFilter = type;
+    
+    // Update button styles
+    document.querySelectorAll('.seller-filter-btn').forEach(btn => {
+      btn.classList.remove('active');
+      btn.style.background = '';
+      btn.style.color = '';
+    });
+
+    if (btnElement) {
+      btnElement.classList.add('active');
+      if (type === 'all') {
+        btnElement.style.background = 'var(--haat-green-dark)';
+        btnElement.style.color = '#fff';
+      } else if (type === 'pending') {
+        btnElement.style.background = '#d97008';
+        btnElement.style.color = '#fff';
+      } else if (type === 'verified') {
+        btnElement.style.background = '#166534';
+        btnElement.style.color = '#fff';
+      }
+    }
+
+    applySellerFilters();
+  }
+
+  function searchSellersTable() {
+    applySellerFilters();
+  }
+
+  function applySellerFilters() {
+    const query = (document.getElementById('sellerSearchInput')?.value || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('.seller-table-row');
+    let visibleCount = 0;
+
+    rows.forEach(row => {
+      const isVerified = row.getAttribute('data-verified') === '1';
+      const searchData = row.getAttribute('data-search') || '';
+
+      let matchesFilter = true;
+      if (currentSellerFilter === 'pending') {
+        matchesFilter = !isVerified;
+      } else if (currentSellerFilter === 'verified') {
+        matchesFilter = isVerified;
+      }
+
+      let matchesSearch = true;
+      if (query.length > 0) {
+        matchesSearch = searchData.includes(query);
+      }
+
+      if (matchesFilter && matchesSearch) {
+        row.style.display = '';
+        visibleCount++;
+      } else {
+        row.style.display = 'none';
+      }
+    });
+
+    const countElem = document.getElementById('visibleSellersCount');
+    if (countElem) {
+      countElem.textContent = visibleCount;
+    }
+  }
+
+  // Seller Verification Modal Functions
+  function openSellerVerifyModal(s) {
+    if (!s) return;
+    
+    document.getElementById('modalShopName').textContent = s.shop_name || 'Artisan Workshop';
+    document.getElementById('modalLocation').textContent = (s.district || '') + ' District, ' + (s.division || '') + ' Division';
+    document.getElementById('modalOwnerName').textContent = s.owner_name || 'Unknown Craftsman';
+    document.getElementById('modalContact').textContent = (s.phone || 'No phone') + ' • ' + (s.owner_email || 'No email');
+    document.getElementById('modalAddress').textContent = s.address || (s.district + ', ' + s.division);
+    document.getElementById('modalPayout').textContent = s.bkash_number ? ('bKash: ' + s.bkash_number) : (s.bank_account_no ? ('Bank: ' + s.bank_account_no) : 'Not specified');
+    document.getElementById('modalNid').textContent = s.nid_number || 'Verified Regional Guild Member';
+    document.getElementById('modalTrade').textContent = s.trade_license || 'Heritage Artisan Registry BD-' + s.id;
+    document.getElementById('modalBio').textContent = s.description || 'Dedicated authentic artisan craft workshop producing regional Geographical Indication goods across Bangladesh.';
+    
+    document.getElementById('modalViewStoreLink').href = '<?= BASE_URL ?>vendor.php?id=' + s.id;
+
+    const isVerified = parseInt(s.is_verified) === 1;
+    const badgeContainer = document.getElementById('modalStatusBadge');
+    const noticeBox = document.getElementById('modalNoticeBox');
+    const noticeIcon = document.getElementById('modalNoticeIcon');
+    const noticeText = document.getElementById('modalNoticeText');
+    const actionBtn = document.getElementById('modalActionBtn');
+
+    if (isVerified) {
+      badgeContainer.innerHTML = '<span class="badge" style="background:#e8f5e9; color:#166534; font-size:0.85rem; font-weight:700; padding:5px 10px; border-radius:4px;"><i class="bi bi-patch-check-fill"></i> GI Verified</span>';
+      
+      noticeBox.style.background = '#e8f5e9';
+      noticeBox.style.border = '1px solid #bbf7d0';
+      noticeBox.style.color = '#166534';
+      noticeIcon.className = 'bi bi-check-circle-fill';
+      noticeText.innerHTML = '<strong>Artisan is Officially GI Verified.</strong> The green GI Verified badge is actively displayed on their public storefront, vendor profile, and all crafted product pages.';
+
+      actionBtn.className = 'btn btn-sm btn-outline-clay';
+      actionBtn.style.background = '#fdf2f2';
+      actionBtn.style.color = '#c52828';
+      actionBtn.style.border = '1px solid #f8c8dc';
+      actionBtn.innerHTML = '<i class="bi bi-x-circle"></i> Revoke GI Badge';
+      actionBtn.href = '<?= BASE_URL ?>admin/?revoke_verify=' + s.id;
+    } else {
+      badgeContainer.innerHTML = '<span class="badge" style="background:#fef3c7; color:#92400e; font-size:0.85rem; font-weight:700; padding:5px 10px; border-radius:4px;"><i class="bi bi-clock-history"></i> Pending Verification</span>';
+      
+      noticeBox.style.background = '#fffbeb';
+      noticeBox.style.border = '1px solid #fde68a';
+      noticeBox.style.color = '#92400e';
+      noticeIcon.className = 'bi bi-exclamation-triangle-fill';
+      noticeText.innerHTML = '<strong>Awaiting GI Verification.</strong> Review the master crafter\'s origin district, credentials, and craft bio. Approving will immediately activate the official 🛡️ GI Verified badge on their store and products.';
+
+      actionBtn.className = 'btn btn-sm';
+      actionBtn.style.background = '#166534';
+      actionBtn.style.color = '#ffffff';
+      actionBtn.style.border = 'none';
+      actionBtn.innerHTML = '<i class="bi bi-patch-check-fill"></i> Approve & Issue GI Badge';
+      actionBtn.href = '<?= BASE_URL ?>admin/?approve_verify=' + s.id;
+    }
+
+    const modal = document.getElementById('sellerVerifyModal');
+    modal.style.display = 'flex';
+    const modalBody = document.getElementById('sellerVerifyModalBody');
+    if (modalBody) modalBody.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeSellerVerifyModal() {
+    const modal = document.getElementById('sellerVerifyModal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+    document.body.style.overflow = '';
+  }
+
   // Handle Hash on Page Load
   window.addEventListener('DOMContentLoaded', () => {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'haatex', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (hash && validTabs.includes(hash)) {
       switchAdminTab(hash);
     } else {
@@ -1382,11 +2000,20 @@ require_once __DIR__ . '/../includes/header.php';
   // Handle browser back/forward buttons
   window.addEventListener('hashchange', () => {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ['overview', 'orders', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
+    const validTabs = ['overview', 'orders', 'haatex', 'analytics', 'promotions', 'sellers', 'products', 'categories', 'users'];
     if (hash && validTabs.includes(hash)) {
       switchAdminTab(hash);
+    }
+  });
+
+  // Close modal when clicking outside
+  window.addEventListener('click', (e) => {
+    const modal = document.getElementById('sellerVerifyModal');
+    if (e.target === modal) {
+      closeSellerVerifyModal();
     }
   });
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>
+

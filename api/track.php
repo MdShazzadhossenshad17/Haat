@@ -28,6 +28,12 @@ if (!$order) {
     exit;
 }
 
+if ($action === 'get' && !canAccessOrder($order)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'You are not authorized to view this order.']);
+    exit;
+}
+
 // 1. GET LIVE TRACKING DATA
 if ($action === 'get') {
     // Fetch items with seller info
@@ -65,11 +71,15 @@ if ($action === 'get') {
             'id' => (int)$order['id'],
             'order_number' => $order['order_number'],
             'order_status' => $order['order_status'],
+            'logistics_status' => $order['logistics_status'] ?? 'pending',
+            'assigned_rider_name' => $order['assigned_rider_name'] ?? '',
+            'assigned_rider_phone' => $order['assigned_rider_phone'] ?? '',
             'payment_status' => $order['payment_status'],
             'payment_method' => strtoupper($order['payment_method']),
-            'courier_partner' => $order['courier_partner'] ?? 'Pathao Courier',
-            'tracking_code' => $order['tracking_code'] ?? 'PTH-8849201',
+            'courier_partner' => $order['courier_partner'] ?? 'HAATEX (HAAT Express Logistics)',
+            'tracking_code' => $order['tracking_code'] ?? 'HTX-884920',
             'estimated_delivery' => $order['estimated_delivery'] ?? '25-27 Sep 2026',
+            'delivered_date' => !empty($order['delivered_date']) ? date('d M Y, h:i A', strtotime($order['delivered_date'])) : '',
             'grand_total' => formatPrice($order['grand_total']),
             'recipient' => [
                 'name' => $order['shipping_name'],
@@ -98,6 +108,11 @@ if ($action === 'get') {
 
 // 2. LIVE STATUS UPDATE (From Seller, Delivery Partner, or Admin)
 if ($action === 'push_update') {
+    if (!canUpdateOrderTracking($order)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'You are not authorized to update this order.']);
+        exit;
+    }
     $statusKey = trim($payload['status_key'] ?? ''); // 'pending', 'processing', 'shipped', 'delivered'
     $title = trim($payload['title'] ?? '');
     $actor = trim($payload['actor'] ?? 'Delivery Partner');
@@ -129,6 +144,24 @@ if ($action === 'push_update') {
     // Also update order_items vendor status if passed
     if ($statusKey === 'delivered' || $statusKey === 'shipped') {
         $db->prepare("UPDATE `order_items` SET `vendor_status` = ? WHERE `order_id` = ?")->execute([$statusKey, $order['id']]);
+    }
+
+    if ($statusKey === 'shipped' || $statusKey === 'delivered' || $statusKey === 'cancelled') {
+        // Once shipped or completed, dismiss all order notifications as requested
+        dismissOrderNotifications($order['order_number']);
+    } else {
+        // Crafting / preparation tracking update
+        $notifTitle = "Crafting in Progress: #{$order['order_number']}";
+        $notifMsg = "{$title}: {$note}" . ($location ? " (Location: {$location})" : "");
+        createNotification(
+            $order['user_id'],
+            $notifTitle,
+            $notifMsg,
+            "order_{$statusKey}",
+            BASE_URL . "track-order.php?order=" . urlencode($order['order_number']),
+            null,
+            $order['order_number']
+        );
     }
 
     echo json_encode([

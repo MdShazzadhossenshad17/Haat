@@ -1,7 +1,7 @@
 <?php
 /**
- * Daraz-Style Live Order Tracking Page
- * HAAT Multi-Vendor Marketplace
+ * Daraz-Style Authentic Live Order Tracking Page
+ * HAAT Multi-Vendor Marketplace & HAATEX Logistics
  */
 require_once __DIR__ . '/includes/functions.php';
 
@@ -16,7 +16,7 @@ if (!empty($orderNumber) && !isLoggedIn()) {
     exit;
 }
 
-$pageTitle = 'Track Order — HAAT';
+$pageTitle = 'Track Order — HAATEX Live Tracking';
 require_once __DIR__ . '/includes/header.php';
 
 $order = null;
@@ -50,480 +50,811 @@ if (!empty($orderNumber)) {
     }
 }
 
-// Compute Daraz milestones
+// Compute HAATEX 5-Stage Daraz-Style Tracking Milestones
 $orderStatus = $order['order_status'] ?? 'pending';
-$courierPartner = $order['courier_partner'] ?? 'Pathao Courier Logistics';
-$trackingCode = $order['tracking_code'] ?? 'PTH-8849201';
-$estDelivery = $order['estimated_delivery'] ?? '25-27 Sep 2026';
+$logStatus = $order['logistics_status'] ?? 'pending';
+$courierPartner = $order['courier_partner'] ?? 'HAATEX (HAAT Express Logistics)';
+$trackingCode = $order['tracking_code'] ?? 'HTX-884920';
+$estDelivery = $order['estimated_delivery'] ?? '25-28 Sep 2026';
+$assignedRiderName = $order['assigned_rider_name'] ?? '';
+$assignedRiderPhone = $order['assigned_rider_phone'] ?? '';
 
-// Milestone states: 0: upcoming, 1: current/active, 2: completed
-$stepOrderConfirmed = 2; // Always confirmed once order exists
-$stepReadyStore = ($orderStatus === 'processing' || $orderStatus === 'shipped' || $orderStatus === 'delivered') ? ($orderStatus === 'processing' ? 1 : 2) : 0;
-$stepHeadedDelivery = ($orderStatus === 'shipped' || $orderStatus === 'delivered') ? ($orderStatus === 'shipped' ? 1 : 2) : 0;
-$stepDelivered = ($orderStatus === 'delivered') ? 2 : 0;
+// Milestone states: 0: upcoming, 1: active/in-progress, 2: completed
+$stepPlaced = 2; // Always completed
+
+// Step 2: Packed by Seller
+$stepPacked = 0;
+if ($orderStatus === 'processing') {
+    $stepPacked = 1;
+} elseif ($logStatus === 'pickup_requested' || $logStatus === 'hub_received' || $logStatus === 'out_for_delivery' || $logStatus === 'delivered' || $orderStatus === 'shipped' || $orderStatus === 'delivered') {
+    $stepPacked = 2;
+}
+
+// Step 3: Shipped / In Hub
+$stepHub = 0;
+if ($logStatus === 'pickup_requested') {
+    $stepHub = 1;
+} elseif ($logStatus === 'hub_received' || ($orderStatus === 'shipped' && $logStatus !== 'out_for_delivery' && $logStatus !== 'delivered')) {
+    $stepHub = 1;
+} elseif ($logStatus === 'out_for_delivery' || $logStatus === 'delivered' || $orderStatus === 'delivered') {
+    $stepHub = 2;
+}
+
+// Step 4: Out for Delivery
+$stepOut = 0;
+if ($logStatus === 'out_for_delivery') {
+    $stepOut = 1;
+} elseif ($logStatus === 'delivered' || $orderStatus === 'delivered') {
+    $stepOut = 2;
+}
+
+// Step 5: Delivered
+$stepDelivered = ($orderStatus === 'delivered' || $logStatus === 'delivered') ? 2 : 0;
 
 // Find event timestamps
-$timeConfirmed = !empty($order) ? date('d M Y, h:i A', strtotime($order['created_at'])) : '';
-$timeReady = '';
-$timeShipped = '';
+$timePlaced = !empty($order) ? date('d M Y, h:i A', strtotime($order['created_at'])) : '';
+$timePacked = '';
+$timeHub = '';
+$timeOut = '';
 $timeDelivered = '';
 $transitNotes = [];
 
 foreach ($trackingEvents as $ev) {
-    if ($ev['status_key'] === 'processing' && empty($timeReady)) {
-        $timeReady = date('d M Y, h:i A', strtotime($ev['created_at']));
+    if (($ev['status_key'] === 'packed' || $ev['status_key'] === 'processing') && empty($timePacked)) {
+        $timePacked = date('d M Y, h:i A', strtotime($ev['created_at']));
     }
-    if ($ev['status_key'] === 'shipped') {
-        $timeShipped = date('d M Y, h:i A', strtotime($ev['created_at']));
-        $transitNotes[] = [
-            'time' => date('h:i A, d M', strtotime($ev['created_at'])),
-            'title' => $ev['title'],
-            'actor' => $ev['actor'],
-            'location' => $ev['location'],
-            'note' => $ev['note']
-        ];
+    if (($ev['status_key'] === 'shipped' || $ev['status_key'] === 'hub_received') && empty($timeHub)) {
+        $timeHub = date('d M Y, h:i A', strtotime($ev['created_at']));
+    }
+    if ($ev['status_key'] === 'out_for_delivery' && empty($timeOut)) {
+        $timeOut = date('d M Y, h:i A', strtotime($ev['created_at']));
     }
     if ($ev['status_key'] === 'delivered') {
         $timeDelivered = date('d M Y, h:i A', strtotime($ev['created_at']));
     }
+
+    $transitNotes[] = [
+        'id' => $ev['id'],
+        'time' => date('h:i A', strtotime($ev['created_at'])),
+        'date' => date('d M Y', strtotime($ev['created_at'])),
+        'title' => $ev['title'],
+        'actor' => $ev['actor'],
+        'location' => $ev['location'],
+        'note' => $ev['note'],
+        'status_key' => $ev['status_key']
+    ];
 }
+
+$progressPercent = '0%';
+if ($stepDelivered === 2) $progressPercent = '100%';
+elseif ($stepOut === 1 || $stepOut === 2) $progressPercent = '75%';
+elseif ($stepHub === 1 || $stepHub === 2) $progressPercent = '50%';
+elseif ($stepPacked === 1 || $stepPacked === 2) $progressPercent = '25%';
+else $progressPercent = '0%';
 ?>
 
 <style>
-  /* Daraz-style vertical tracking timeline */
-  .daraz-timeline {
-    position: relative;
-    padding-left: 38px;
-    margin: 28px 0;
+  /* ==========================================================
+     AUTHENTIC DARAZ-STYLE TRACKING VISUALIZATION STYLES
+     ========================================================== */
+  .daraz-tracking-wrapper {
+    max-width: 920px;
+    margin: 0 auto;
   }
-  .daraz-timeline-line {
+
+  /* Status Hero Card */
+  .daraz-status-banner {
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+  }
+  .status-banner-delivered {
+    background: linear-gradient(135deg, #1b3d22 0%, #2d5a36 100%);
+    color: #ffffff;
+  }
+  .status-banner-out {
+    background: linear-gradient(135deg, #c2612d 0%, #df7a44 100%);
+    color: #ffffff;
+  }
+  .status-banner-transit {
+    background: linear-gradient(135deg, #0f4c81 0%, #2575fc 100%);
+    color: #ffffff;
+  }
+  .status-banner-packing {
+    background: linear-gradient(135deg, #854d0e 0%, #b45309 100%);
+    color: #ffffff;
+  }
+  .status-banner-pending {
+    background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%);
+    color: #ffffff;
+  }
+
+  /* Main Tracking Card */
+  .daraz-card {
+    background: #ffffff;
+    border: 1px solid var(--haat-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+    padding: 26px 28px;
+    margin-bottom: 24px;
+  }
+
+  /* Daraz Horizontal Stepper */
+  .daraz-stepper-container {
+    position: relative;
+    padding: 24px 10px 10px;
+    margin-bottom: 36px;
+  }
+  .daraz-stepper-track-bg {
     position: absolute;
-    top: 14px;
-    bottom: 24px;
-    left: 15px;
-    width: 2px;
+    top: 44px;
+    left: 40px;
+    right: 40px;
+    height: 4px;
     background: #e2e8f0;
     z-index: 1;
+    border-radius: 2px;
   }
-  .daraz-timeline-progress {
+  .daraz-stepper-track-fill {
     position: absolute;
-    top: 14px;
-    left: 15px;
-    width: 2px;
-    background: var(--haat-green);
+    top: 44px;
+    left: 40px;
+    height: 4px;
+    background: linear-gradient(90deg, #1b3d22 0%, #c2612d 100%);
     z-index: 2;
-    transition: height 0.5s ease;
+    border-radius: 2px;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .daraz-step {
+  .daraz-stepper-steps {
     position: relative;
-    margin-bottom: 28px;
+    display: flex;
+    justify-content: space-between;
     z-index: 3;
   }
-  .daraz-step:last-child {
-    margin-bottom: 0;
+  .daraz-step-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    width: 120px;
   }
-  .daraz-dot {
-    position: absolute;
-    left: -38px;
-    top: 0;
-    width: 32px;
-    height: 32px;
+  .daraz-step-bubble {
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.95rem;
-    transition: all 0.3s ease;
-  }
-  .daraz-dot-done {
-    background: var(--haat-green);
-    color: #ffffff;
-    box-shadow: 0 2px 8px rgba(30, 63, 32, 0.25);
-  }
-  .daraz-dot-active {
-    background: var(--haat-clay);
-    color: #ffffff;
-    box-shadow: 0 0 0 4px rgba(194, 97, 45, 0.22);
-    animation: activePulse 2s infinite;
-  }
-  .daraz-dot-pending {
-    background: #f8fafc;
+    font-size: 1.25rem;
+    background: #ffffff;
+    border: 3px solid #cbd5e1;
     color: #94a3b8;
-    border: 2px solid #cbd5e1;
+    margin-bottom: 10px;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
   }
-  @keyframes activePulse {
-    0% { box-shadow: 0 0 0 0 rgba(194, 97, 45, 0.4); }
-    70% { box-shadow: 0 0 0 7px rgba(194, 97, 45, 0); }
+  .daraz-step-node.is-done .daraz-step-bubble {
+    background: #1b3d22;
+    border-color: #1b3d22;
+    color: #ffffff;
+    box-shadow: 0 3px 10px rgba(27, 61, 34, 0.3);
+  }
+  .daraz-step-node.is-active .daraz-step-bubble {
+    background: #c2612d;
+    border-color: #c2612d;
+    color: #ffffff;
+    box-shadow: 0 0 0 5px rgba(194, 97, 45, 0.25);
+    animation: activeBubblePulse 2s infinite;
+  }
+  @keyframes activeBubblePulse {
+    0% { box-shadow: 0 0 0 0 rgba(194, 97, 45, 0.45); }
+    70% { box-shadow: 0 0 0 10px rgba(194, 97, 45, 0); }
     100% { box-shadow: 0 0 0 0 rgba(194, 97, 45, 0); }
   }
+  .daraz-step-label {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #64748b;
+    line-height: 1.3;
+    margin-bottom: 2px;
+  }
+  .daraz-step-node.is-done .daraz-step-label {
+    color: var(--haat-green-dark);
+  }
+  .daraz-step-node.is-active .daraz-step-label {
+    color: var(--haat-clay);
+  }
+  .daraz-step-time {
+    font-size: 0.72rem;
+    color: #94a3b8;
+  }
 
-  .daraz-card-header {
-    border-bottom: 1px solid var(--haat-border);
-    padding-bottom: 16px;
-    margin-bottom: 24px;
+  /* Courier / Rider Info Card */
+  .daraz-courier-strip {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 28px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    align-items: center;
+  }
+
+  /* Daraz Vertical Timeline Activity Log */
+  .daraz-vertical-timeline {
+    position: relative;
+    padding-left: 170px;
+    margin: 20px 0 10px;
+  }
+  .daraz-vt-line {
+    position: absolute;
+    top: 10px;
+    bottom: 20px;
+    left: 155px;
+    width: 2px;
+    background: #e2e8f0;
+  }
+  .daraz-vt-item {
+    position: relative;
+    padding-bottom: 26px;
+  }
+  .daraz-vt-item:last-child {
+    padding-bottom: 0;
+  }
+  .daraz-vt-timestamp {
+    position: absolute;
+    left: -170px;
+    top: -2px;
+    width: 140px;
+    text-align: right;
+  }
+  .daraz-vt-time {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--haat-green-dark);
+  }
+  .daraz-vt-date {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .daraz-vt-dot {
+    position: absolute;
+    left: -20px;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #cbd5e1;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 2px #cbd5e1;
+  }
+  .daraz-vt-item.is-latest .daraz-vt-dot {
+    background: var(--haat-clay);
+    box-shadow: 0 0 0 3px rgba(194,97,45,0.3);
+    animation: vtDotPulse 2s infinite;
+  }
+  @keyframes vtDotPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.3); }
+    100% { transform: scale(1); }
+  }
+  .daraz-vt-item.is-completed .daraz-vt-dot {
+    background: var(--haat-green);
+    box-shadow: 0 0 0 2px var(--haat-green);
+  }
+  .daraz-vt-content {
+    background: #fafaf9;
+    border: 1px solid #f0eeeb;
+    border-radius: 8px;
+    padding: 12px 16px;
+    transition: all 0.2s ease;
+  }
+  .daraz-vt-item.is-latest .daraz-vt-content {
+    background: #ffffff;
+    border: 1px solid rgba(194,97,45,0.3);
+    box-shadow: 0 2px 8px rgba(194,97,45,0.08);
+  }
+  .daraz-vt-title {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--haat-green-dark);
+    margin-bottom: 2px;
+  }
+  .daraz-vt-item.is-latest .daraz-vt-title {
+    color: var(--haat-clay);
+  }
+  .daraz-vt-desc {
+    font-size: 0.82rem;
+    color: var(--text-main);
+    line-height: 1.4;
+    margin-bottom: 4px;
+  }
+  .daraz-vt-location {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  @media (max-width: 768px) {
+    .daraz-stepper-steps {
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .daraz-stepper-track-bg, .daraz-stepper-track-fill {
+      display: none;
+    }
+    .daraz-step-node {
+      width: 48%;
+      flex-direction: row;
+      text-align: left;
+      gap: 10px;
+    }
+    .daraz-vertical-timeline {
+      padding-left: 36px;
+    }
+    .daraz-vt-line {
+      left: 10px;
+    }
+    .daraz-vt-timestamp {
+      position: static;
+      text-align: left;
+      margin-bottom: 6px;
+      width: auto;
+    }
+    .daraz-vt-dot {
+      left: -32px;
+    }
   }
 </style>
 
-<div class="container" style="padding: 36px 20px 80px;">
+<div class="container" style="padding: 32px 20px 80px;">
   
-  <div style="max-width:800px; margin:0 auto;">
+  <div class="daraz-tracking-wrapper">
     
-    <!-- Page Header -->
-    <div style="text-align:center; margin-bottom:28px;">
-      <h1 style="font-size:2rem; color:var(--haat-green-dark); margin-bottom:6px; display:flex; align-items:center; justify-content:center; gap:10px;">
-        <i class="bi bi-truck text-clay"></i> Track Order
+    <!-- Page Header Title -->
+    <div style="text-align:center; margin-bottom:24px;">
+      <h1 style="font-size:1.85rem; color:var(--haat-green-dark); margin-bottom:4px; display:flex; align-items:center; justify-content:center; gap:10px;">
+        <i class="bi bi-truck text-clay"></i> Live Order & Logistics Tracking
       </h1>
-      <p style="color:var(--text-muted); font-size:0.9rem; margin:0 auto; max-width:500px;">
-        Follow your package delivery progress from artisan store preparation to doorstep arrival.
+      <p style="color:var(--text-muted); font-size:0.88rem; margin:0 auto; max-width:520px;">
+        Real-time doorstep fulfillment powered by HAATEX Express Logistics.
       </p>
     </div>
 
-    <!-- Search / Look-Up Bar -->
-    <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); padding:20px 24px; box-shadow:var(--shadow-sm); margin-bottom:28px;">
+    <!-- Look-Up Search Form -->
+    <div style="background:#fff; border:1px solid var(--haat-border); border-radius:12px; padding:18px 24px; box-shadow:var(--shadow-sm); margin-bottom:24px;">
       <form method="GET" action="<?= BASE_URL ?>track-order.php" style="display:grid; grid-template-columns: 1fr 1fr auto; gap:14px; align-items:flex-end;">
         <div>
-          <label style="font-weight:600; font-size:0.85rem; display:block; margin-bottom:4px; color:var(--text-main);">Order Number</label>
-          <input type="text" name="order" required placeholder="e.g. HAAT-2026-90412" value="<?= sanitize($orderNumber) ?>" style="width:100%; padding:10px 14px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.92rem; outline:none; text-transform:uppercase; font-weight:700; color:var(--haat-green-dark);">
+          <label style="font-weight:700; font-size:0.82rem; display:block; margin-bottom:4px; color:var(--text-main); text-transform:uppercase; letter-spacing:0.5px;">Order Number</label>
+          <input type="text" name="order" required placeholder="e.g. HAAT-2026-90412" value="<?= sanitize($orderNumber) ?>" style="width:100%; padding:10px 14px; border:1px solid var(--haat-border); border-radius:6px; font-size:0.92rem; outline:none; text-transform:uppercase; font-weight:700; color:var(--haat-green-dark);">
         </div>
 
         <div>
-          <label style="font-weight:600; font-size:0.85rem; display:block; margin-bottom:4px; color:var(--text-main);">Recipient Phone (Optional)</label>
-          <input type="text" name="phone" placeholder="e.g. 01511556677" value="<?= sanitize($phone) ?>" style="width:100%; padding:10px 14px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.92rem; outline:none;">
+          <label style="font-weight:700; font-size:0.82rem; display:block; margin-bottom:4px; color:var(--text-main); text-transform:uppercase; letter-spacing:0.5px;">Recipient Phone (Optional)</label>
+          <input type="text" name="phone" placeholder="e.g. 01711223344" value="<?= sanitize($phone) ?>" style="width:100%; padding:10px 14px; border:1px solid var(--haat-border); border-radius:6px; font-size:0.92rem; outline:none;">
         </div>
 
-        <button type="submit" class="btn btn-clay" style="height:44px; display:inline-flex; align-items:center; gap:8px;">
-          <i class="bi bi-search"></i> Track
+        <button type="submit" class="btn btn-clay" style="height:44px; padding:0 22px; display:inline-flex; align-items:center; gap:8px; font-weight:700;">
+          <i class="bi bi-search"></i> Track Order
         </button>
       </form>
     </div>
 
     <?php if ($orderNumber && !$order): ?>
-      <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:40px; text-align:center;">
-        <i class="bi bi-exclamation-triangle text-clay" style="font-size:2.6rem; display:block; margin-bottom:12px;"></i>
+      <div style="background:#fff; border:1px solid var(--haat-border); border-radius:12px; padding:48px 24px; text-align:center;">
+        <i class="bi bi-exclamation-triangle text-clay" style="font-size:2.8rem; display:block; margin-bottom:12px;"></i>
         <h3 style="color:var(--haat-green-dark); margin-bottom:6px;">Order Not Found</h3>
-        <p style="color:var(--text-muted); font-size:0.9rem;">We couldn't locate order <strong><?= sanitize($orderNumber) ?></strong>. Please double-check the order ID from your confirmation email.</p>
-        <a href="<?= BASE_URL ?>customer/#orders" class="btn btn-sm btn-outline-green" style="margin-top:10px;">Go to My Orders</a>
+        <p style="color:var(--text-muted); font-size:0.9rem;">We couldn't find order <strong><?= sanitize($orderNumber) ?></strong>. Please verify your order ID from your confirmation email or order history.</p>
+        <a href="<?= BASE_URL ?>customer/#orders" class="btn btn-sm btn-outline-green" style="margin-top:10px;">Back to My Orders</a>
       </div>
     <?php elseif ($order): ?>
 
-      <!-- Main Daraz-Style Tracking Container -->
-      <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); padding:30px; box-shadow:var(--shadow-sm); margin-bottom:28px;">
-        
-        <!-- Clean Header (Black marked clutter completely removed) -->
-        <div class="daraz-card-header">
-          <h2 style="color:var(--haat-green-dark); font-size:1.35rem; margin:0; font-weight:700;">
-            Order #<?= sanitize($order['order_number']) ?>
-          </h2>
-        </div>
+      <?php
+      // Determine Banner Status Class & Content
+      $bannerClass = 'status-banner-pending';
+      $bannerIcon = 'bi-box-seam';
+      $bannerTitle = 'Order Confirmed & Placed';
+      $bannerSubtitle = 'Payment confirmed. Artisan workshop notified to begin handcrafting and packaging.';
 
-        <!-- Unified Daraz-Style Vertical Progression (Yellow + Red unified) -->
-        <div class="daraz-timeline" id="daraz-tracking-timeline">
-          
-          <!-- Background Line -->
-          <div class="daraz-timeline-line"></div>
-          <!-- Progress Line -->
-          <div class="daraz-timeline-progress" id="daraz-line-fill" style="height: <?= $stepDelivered === 2 ? '100%' : ($stepHeadedDelivery ? '70%' : ($stepReadyStore ? '40%' : '10%')) ?>;"></div>
+      if ($stepDelivered === 2) {
+          $bannerClass = 'status-banner-delivered';
+          $bannerIcon = 'bi-check-circle-fill';
+          $bannerTitle = 'Delivered & Handed Over';
+          $bannerSubtitle = 'Your package has been successfully delivered. Thank you for supporting local artisans!';
+      } elseif ($stepOut === 1) {
+          $bannerClass = 'status-banner-out';
+          $bannerIcon = 'bi-bicycle';
+          $bannerTitle = 'Out for Doorstep Delivery';
+          $bannerSubtitle = !empty($assignedRiderName) ? "Assigned HAATEX Rider {$assignedRiderName} is en route to your address." : "HAATEX delivery rider is en route to your delivery address.";
+      } elseif ($stepHub === 1 || $stepHub === 2) {
+          $bannerClass = 'status-banner-transit';
+          $bannerIcon = 'bi-truck';
+          $bannerTitle = 'In Transit — HAATEX Sorting Hub';
+          $bannerSubtitle = 'Package received at HAATEX fulfillment center, undergoing route sorting and dispatch.';
+      } elseif ($stepPacked === 1 || $stepPacked === 2) {
+          $bannerClass = 'status-banner-packing';
+          $bannerIcon = 'bi-box-seam-fill';
+          $bannerTitle = 'Packed by Artisan & Ready for Courier';
+          $bannerSubtitle = 'Artisan has finished crafting and packing your items. Pickup courier scheduled.';
+      } elseif ($orderStatus === 'processing') {
+          $bannerClass = 'status-banner-packing';
+          $bannerIcon = 'bi-hammer';
+          $bannerTitle = 'Artisan Crafting & Workshop Preparation';
+          $bannerSubtitle = 'Artisan is currently weaving / crafting your items with genuine care.';
+      }
+      ?>
 
-          <!-- STEP 1: Order Confirmed -->
-          <div class="daraz-step" id="step-confirmed">
-            <div class="daraz-dot daraz-dot-done">
-              <i class="bi bi-check-lg"></i>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:6px;">
-                <strong style="color:var(--haat-green-dark); font-size:1rem;">Order Confirmed</strong>
-                <span id="txt-time-confirmed" style="font-size:0.78rem; color:var(--text-muted);"><?= $timeConfirmed ?></span>
-              </div>
-              <p style="margin:4px 0 0; font-size:0.85rem; color:var(--text-muted); line-height:1.45;">
-                Payment verified via <?= strtoupper($order['payment_method']) ?>. Your order has been placed into the HAAT system.
-              </p>
-            </div>
+      <!-- Daraz Status Hero Banner -->
+      <div class="daraz-status-banner <?= $bannerClass ?>" id="daraz-live-banner">
+        <div style="display:flex; align-items:center; gap:16px;">
+          <div style="width:48px; height:48px; border-radius:50%; background:rgba(255,255,255,0.2); display:flex; align-items:center; justify-content:center; font-size:1.5rem; flex-shrink:0; backdrop-filter:blur(4px);">
+            <i class="bi <?= $bannerIcon ?>" id="banner-icon"></i>
           </div>
-
-          <!-- STEP 2: Ready by Seller / Store -->
-          <div class="daraz-step" id="step-ready">
-            <div class="daraz-dot <?= $stepReadyStore === 2 ? 'daraz-dot-done' : ($stepReadyStore === 1 ? 'daraz-dot-active' : 'daraz-dot-pending') ?>">
-              <?php if ($stepReadyStore === 2): ?>
-                <i class="bi bi-check-lg"></i>
-              <?php elseif ($stepReadyStore === 1): ?>
-                <i class="bi bi-box-seam"></i>
-              <?php else: ?>
-                <i class="bi bi-circle"></i>
-              <?php endif; ?>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:6px;">
-                <strong style="color:<?= $stepReadyStore ? 'var(--haat-green-dark)' : 'var(--text-muted)' ?>; font-size:1rem;">
-                  Ready by Seller / Store
-                </strong>
-                <span id="txt-time-ready" style="font-size:0.78rem; color:var(--text-muted);">
-                  <?= $timeReady ?: ($stepReadyStore ? 'In preparation' : '') ?>
-                </span>
-              </div>
-              <p style="margin:4px 0 0; font-size:0.85rem; color:var(--text-muted); line-height:1.45;">
-                Artisan workshop prepares, inspects craftsmanship, and packages the items for delivery handover.
-              </p>
-            </div>
-          </div>
-
-          <!-- STEP 3: Headed to Delivery / In Transit (Shows Delivery Partner and Checkpoints) -->
-          <div class="daraz-step" id="step-shipped">
-            <div class="daraz-dot <?= $stepHeadedDelivery === 2 ? 'daraz-dot-done' : ($stepHeadedDelivery === 1 ? 'daraz-dot-active' : 'daraz-dot-pending') ?>">
-              <?php if ($stepHeadedDelivery === 2): ?>
-                <i class="bi bi-check-lg"></i>
-              <?php elseif ($stepHeadedDelivery === 1): ?>
-                <i class="bi bi-truck"></i>
-              <?php else: ?>
-                <i class="bi bi-circle"></i>
-              <?php endif; ?>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:6px;">
-                <strong style="color:<?= $stepHeadedDelivery ? 'var(--haat-green-dark)' : 'var(--text-muted)' ?>; font-size:1rem;">
-                  Headed to Delivery (In Transit)
-                </strong>
-                <span id="txt-time-shipped" style="font-size:0.78rem; color:var(--text-muted);">
-                  <?= $timeShipped ?: ($stepHeadedDelivery ? 'On the way' : '') ?>
-                </span>
-              </div>
-              <p style="margin:4px 0 0; font-size:0.85rem; color:var(--text-muted); line-height:1.45;">
-                Package handed over to logistics carrier and moving through sorting hubs to destination.
-              </p>
-
-              <!-- Integrated Delivery Partner Details Box (Like Daraz) -->
-              <div id="daraz-delivery-partner-card" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:14px 18px; margin-top:12px;">
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:center;">
-                  <div>
-                    <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Delivery Partner</span>
-                    <strong id="dp-partner-name" style="color:var(--haat-green-dark); font-size:0.92rem; display:flex; align-items:center; gap:6px;">
-                      <i class="bi bi-truck text-clay"></i> <?= sanitize($courierPartner) ?>
-                    </strong>
-                  </div>
-
-                  <div>
-                    <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Tracking Consignment Code</span>
-                    <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
-                      <code id="dp-tracking-code" style="background:#fff; border:1px solid #cbd5e1; padding:2px 8px; border-radius:4px; font-weight:700; color:var(--haat-clay); font-size:0.85rem;">
-                        <?= sanitize($trackingCode) ?>
-                      </code>
-                      <button type="button" onclick="navigator.clipboard.writeText('<?= sanitize($trackingCode) ?>'); this.innerText='Copied!';" style="background:none; border:none; color:var(--text-muted); font-size:0.75rem; cursor:pointer; text-decoration:underline;">
-                        Copy
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Estimated Delivery</span>
-                    <strong id="dp-est-delivery" style="color:var(--haat-green); font-size:0.9rem;">
-                      <?= sanitize($estDelivery) ?>
-                    </strong>
-                  </div>
-                </div>
-
-                <!-- Live Transit Checkpoints Bullet List -->
-                <?php if (!empty($transitNotes)): ?>
-                  <div id="daraz-transit-checkpoints" style="border-top:1px dashed #cbd5e1; margin-top:12px; padding-top:10px;">
-                    <span style="font-size:0.75rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:6px;">
-                      Transit Checkpoints:
-                    </span>
-                    <div id="checkpoints-list" style="display:flex; flex-direction:column; gap:6px;">
-                      <?php foreach (array_reverse($transitNotes) as $c): ?>
-                        <div style="font-size:0.8rem; color:var(--text-main); display:flex; gap:8px;">
-                          <span style="color:var(--haat-clay); font-weight:700; flex-shrink:0;">• <?= $c['time'] ?>:</span>
-                          <span><strong><?= sanitize($c['title']) ?></strong> (<?= sanitize($c['location'] ?: $c['actor']) ?>)</span>
-                        </div>
-                      <?php endforeach; ?>
-                    </div>
-                  </div>
-                <?php endif; ?>
-              </div>
-
-            </div>
-          </div>
-
-          <!-- STEP 4: Delivered -->
-          <div class="daraz-step" id="step-delivered">
-            <div class="daraz-dot <?= $stepDelivered === 2 ? 'daraz-dot-done' : 'daraz-dot-pending' ?>">
-              <?php if ($stepDelivered === 2): ?>
-                <i class="bi bi-house-check-fill"></i>
-              <?php else: ?>
-                <i class="bi bi-circle"></i>
-              <?php endif; ?>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:6px;">
-                <strong style="color:<?= $stepDelivered === 2 ? 'var(--haat-green-dark)' : 'var(--text-muted)' ?>; font-size:1rem;">
-                  Delivered
-                </strong>
-                <span id="txt-time-delivered" style="font-size:0.78rem; color:var(--text-muted);">
-                  <?= $timeDelivered ?: '' ?>
-                </span>
-              </div>
-              <p style="margin:4px 0 0; font-size:0.85rem; color:var(--text-muted); line-height:1.45;">
-                Package successfully handed over to recipient at delivery address.
-              </p>
-            </div>
-          </div>
-
-        </div>
-
-        <!-- Package Items Summary -->
-        <div style="margin-top:32px; padding-top:20px; border-top:1px solid var(--haat-border);">
-          <div style="font-size:0.95rem; font-weight:700; color:var(--haat-green-dark); margin-bottom:12px;">
-            Package Items (<?= count($items) ?>)
-          </div>
-          <div style="display:flex; flex-direction:column; gap:8px;">
-            <?php foreach ($items as $it): ?>
-              <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#fdfbf8; border:1px solid var(--haat-border); border-radius:6px; font-size:0.88rem;">
-                <div style="display:flex; align-items:center; gap:10px;">
-                  <?php if (!empty($it['featured_image'])): ?>
-                    <img src="<?= sanitize($it['featured_image']) ?>" alt="thumb" style="width:40px; height:40px; border-radius:6px; object-fit:cover; border:1px solid var(--haat-border);">
-                  <?php else: ?>
-                    <div style="width:40px; height:40px; border-radius:6px; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-clay);">
-                      <i class="bi bi-box"></i>
-                    </div>
-                  <?php endif; ?>
-                  <div>
-                    <strong style="color:var(--text-main); font-size:0.88rem;"><?= sanitize($it['product_name']) ?></strong>
-                    <div style="font-size:0.75rem; color:var(--haat-clay);">Seller: <?= sanitize($it['shop_name']) ?></div>
-                  </div>
-                </div>
-                <div style="text-align:right;">
-                  <span style="font-weight:700; color:var(--haat-green); font-size:0.88rem;">
-                    <?= $it['quantity'] ?> × <?= formatPrice($it['price']) ?>
-                  </span>
-                </div>
-              </div>
-            <?php endforeach; ?>
-          </div>
-        </div>
-
-        <!-- Delivery Address & Payment Summary -->
-        <div style="background:var(--haat-cream); border-radius:8px; padding:14px 18px; font-size:0.85rem; margin-top:20px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;">
           <div>
-            <strong>Delivery Address:</strong> <?= sanitize($order['shipping_name']) ?> (<?= sanitize($order['shipping_phone']) ?>), <?= sanitize($order['shipping_address']) ?>, <?= sanitize($order['district']) ?>
-          </div>
-          <div style="text-align:right;">
-            <strong>Total:</strong> <span style="font-weight:800; color:var(--haat-green-dark);"><?= formatPrice($order['grand_total']) ?></span> (<?= strtoupper($order['payment_method']) ?>)
+            <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.8px; opacity:0.85; font-weight:700;">Package 1 • Standard Delivery</div>
+            <h2 style="margin:2px 0 4px; font-size:1.35rem; font-weight:800; color:#fff;" id="banner-title">
+              <?= $bannerTitle ?>
+            </h2>
+            <p style="margin:0; font-size:0.85rem; opacity:0.92;" id="banner-subtitle">
+              <?= $bannerSubtitle ?>
+            </p>
           </div>
         </div>
 
+        <div style="display:flex; align-items:center; gap:10px;">
+          <a href="<?= BASE_URL ?>customer/#messages" class="btn btn-sm" style="background:#fff; color:var(--haat-green-dark); font-weight:700; font-size:0.82rem; padding:8px 14px; border:none; display:inline-flex; align-items:center; gap:6px; box-shadow:0 2px 6px rgba(0,0,0,0.1);">
+            <i class="bi bi-chat-dots-fill text-clay"></i> Contact HAATEX
+          </a>
+          <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($order['order_number']) ?>" target="_blank" class="btn btn-sm" style="background:rgba(255,255,255,0.2); color:#fff; border:1px solid rgba(255,255,255,0.4); font-weight:600; font-size:0.82rem; padding:8px 14px; display:inline-flex; align-items:center; gap:6px;">
+            <i class="bi bi-printer"></i> Invoice
+          </a>
+        </div>
+      </div>
+
+      <!-- Main Tracking Card -->
+      <div class="daraz-card">
+        
+        <!-- Header Info Bar -->
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #f0eeeb; padding-bottom:18px; margin-bottom:24px;">
+          <div>
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; letter-spacing:0.5px;">Consignment Number</div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:2px;">
+              <span style="font-size:1.15rem; font-weight:800; color:var(--haat-green-dark); font-family:monospace;" id="txt-tracking-code">
+                <?= sanitize($trackingCode) ?>
+              </span>
+              <button type="button" onclick="navigator.clipboard.writeText('<?= sanitize($trackingCode) ?>'); this.innerText='Copied!';" style="background:var(--haat-sand); border:1px solid var(--haat-border); border-radius:4px; color:var(--haat-green-dark); font-size:0.72rem; font-weight:700; padding:2px 8px; cursor:pointer;">
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <div style="text-align:right;">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; letter-spacing:0.5px;">Estimated Delivery</div>
+            <strong style="font-size:1.05rem; color:var(--haat-clay);" id="txt-est-delivery">
+              <?= sanitize($estDelivery) ?>
+            </strong>
+          </div>
+        </div>
+
+        <!-- Daraz Horizontal 5-Step Stepper -->
+        <div class="daraz-stepper-container">
+          <div class="daraz-stepper-track-bg"></div>
+          <div class="daraz-stepper-track-fill" id="daraz-stepper-fill" style="width: <?= $progressPercent ?>;"></div>
+
+          <div class="daraz-stepper-steps">
+            
+            <!-- Step 1: Placed -->
+            <div class="daraz-step-node is-done" id="step-node-placed">
+              <div class="daraz-step-bubble">
+                <i class="bi bi-receipt"></i>
+              </div>
+              <div class="daraz-step-label">Order Placed</div>
+              <div class="daraz-step-time" id="time-node-placed"><?= !empty($timePlaced) ? date('d M, h:i A', strtotime($order['created_at'])) : '' ?></div>
+            </div>
+
+            <!-- Step 2: Packed -->
+            <div class="daraz-step-node <?= ($stepPacked === 2) ? 'is-done' : (($stepPacked === 1) ? 'is-active' : '') ?>" id="step-node-packed">
+              <div class="daraz-step-bubble">
+                <?php if ($stepPacked === 2): ?><i class="bi bi-check-lg"></i>
+                <?php elseif ($stepPacked === 1): ?><i class="bi bi-box-seam-fill"></i>
+                <?php else: ?><i class="bi bi-box-seam"></i><?php endif; ?>
+              </div>
+              <div class="daraz-step-label">Packed by Seller</div>
+              <div class="daraz-step-time" id="time-node-packed"><?= !empty($timePacked) ? $timePacked : ($stepPacked === 1 ? 'In progress' : '') ?></div>
+            </div>
+
+            <!-- Step 3: Hub In Transit -->
+            <div class="daraz-step-node <?= ($stepHub === 2) ? 'is-done' : (($stepHub === 1) ? 'is-active' : '') ?>" id="step-node-hub">
+              <div class="daraz-step-bubble">
+                <?php if ($stepHub === 2): ?><i class="bi bi-check-lg"></i>
+                <?php elseif ($stepHub === 1): ?><i class="bi bi-truck"></i>
+                <?php else: ?><i class="bi bi-truck"></i><?php endif; ?>
+              </div>
+              <div class="daraz-step-label">In Transit / Hub</div>
+              <div class="daraz-step-time" id="time-node-hub"><?= !empty($timeHub) ? $timeHub : ($stepHub === 1 ? 'In sorting hub' : '') ?></div>
+            </div>
+
+            <!-- Step 4: Out for Delivery -->
+            <div class="daraz-step-node <?= ($stepOut === 2) ? 'is-done' : (($stepOut === 1) ? 'is-active' : '') ?>" id="step-node-out">
+              <div class="daraz-step-bubble">
+                <?php if ($stepOut === 2): ?><i class="bi bi-check-lg"></i>
+                <?php elseif ($stepOut === 1): ?><i class="bi bi-bicycle"></i>
+                <?php else: ?><i class="bi bi-bicycle"></i><?php endif; ?>
+              </div>
+              <div class="daraz-step-label">Out for Delivery</div>
+              <div class="daraz-step-time" id="time-node-out"><?= !empty($timeOut) ? $timeOut : ($stepOut === 1 ? 'With rider' : '') ?></div>
+            </div>
+
+            <!-- Step 5: Delivered -->
+            <div class="daraz-step-node <?= ($stepDelivered === 2) ? 'is-done' : '' ?>" id="step-node-delivered">
+              <div class="daraz-step-bubble">
+                <?php if ($stepDelivered === 2): ?><i class="bi bi-house-check-fill"></i>
+                <?php else: ?><i class="bi bi-house-door"></i><?php endif; ?>
+              </div>
+              <div class="daraz-step-label">Delivered</div>
+              <div class="daraz-step-time" id="time-node-delivered"><?= !empty($timeDelivered) ? $timeDelivered : '' ?></div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- HAATEX Courier & Assigned Delivery Rider Card -->
+        <div class="daraz-courier-strip" id="daraz-rider-card">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="width:42px; height:42px; border-radius:8px; background:var(--haat-green-dark); color:#fff; display:flex; align-items:center; justify-content:center; font-size:1.3rem;">
+              <i class="bi bi-truck"></i>
+            </div>
+            <div>
+              <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Courier Service</span>
+              <strong style="color:var(--haat-green-dark); font-size:0.92rem;" id="txt-courier-name"><?= sanitize($courierPartner) ?></strong>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="width:42px; height:42px; border-radius:50%; background:var(--haat-clay-light); color:var(--haat-clay); display:flex; align-items:center; justify-content:center; font-size:1.3rem;">
+              <i class="bi bi-person-badge-fill"></i>
+            </div>
+            <div>
+              <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Assigned Delivery Hero</span>
+              <strong style="color:var(--haat-clay); font-size:0.92rem;" id="txt-assigned-rider">
+                <?= !empty($assignedRiderName) ? sanitize($assignedRiderName) : 'Assigned at local hub' ?>
+              </strong>
+            </div>
+          </div>
+
+          <?php if (!empty($assignedRiderPhone)): ?>
+            <div style="text-align:right;">
+              <a href="tel:<?= sanitize($assignedRiderPhone) ?>" class="btn btn-sm btn-clay" style="font-size:0.82rem; padding:6px 14px; display:inline-flex; align-items:center; gap:6px;">
+                <i class="bi bi-telephone-fill"></i> Call Rider (<?= sanitize($assignedRiderPhone) ?>)
+              </a>
+            </div>
+          <?php endif; ?>
+        </div>
+
+        <!-- Authentic Daraz Activity Log Timeline (Vertical Checkpoints) -->
+        <div style="margin-top:28px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+            <h3 style="font-size:1.1rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:8px;">
+              <i class="bi bi-clock-history text-clay"></i> Tracking History & Checkpoints
+            </h3>
+            <span style="font-size:0.78rem; color:var(--text-muted);">Live updates from HAATEX Network</span>
+          </div>
+
+          <div class="daraz-vertical-timeline" id="daraz-vt-container">
+            <div class="daraz-vt-line"></div>
+
+            <?php if (empty($transitNotes)): ?>
+              <!-- Default Initial Milestone -->
+              <div class="daraz-vt-item is-latest is-completed">
+                <div class="daraz-vt-timestamp">
+                  <div class="daraz-vt-time"><?= date('h:i A', strtotime($order['created_at'])) ?></div>
+                  <div class="daraz-vt-date"><?= date('d M Y', strtotime($order['created_at'])) ?></div>
+                </div>
+                <div class="daraz-vt-dot"></div>
+                <div class="daraz-vt-content">
+                  <div class="daraz-vt-title">Order Confirmed & Payment Verified</div>
+                  <div class="daraz-vt-desc">Order #<?= sanitize($order['order_number']) ?> has been placed. Artisan workshop notified for preparation.</div>
+                  <div class="daraz-vt-location"><i class="bi bi-geo-alt"></i> HAAT Platform Command</div>
+                </div>
+              </div>
+            <?php else: ?>
+              <?php 
+              $reversedEvents = array_reverse($transitNotes);
+              foreach ($reversedEvents as $idx => $ev): 
+                  $isLatest = ($idx === 0);
+              ?>
+                <div class="daraz-vt-item <?= $isLatest ? 'is-latest' : 'is-completed' ?>">
+                  <div class="daraz-vt-timestamp">
+                    <div class="daraz-vt-time"><?= $ev['time'] ?></div>
+                    <div class="daraz-vt-date"><?= $ev['date'] ?></div>
+                  </div>
+                  <div class="daraz-vt-dot"></div>
+                  <div class="daraz-vt-content">
+                    <div class="daraz-vt-title"><?= sanitize($ev['title']) ?></div>
+                    <div class="daraz-vt-desc"><?= sanitize($ev['note'] ?: $ev['title']) ?></div>
+                    <div class="daraz-vt-location">
+                      <i class="bi bi-geo-alt"></i> <?= sanitize($ev['location'] ?: $ev['actor']) ?>
+                    </div>
+                  </div>
+                </div>
+              <?php endforeach; ?>
+            <?php endif; ?>
+
+          </div>
+        </div>
 
       </div>
 
-      <!-- Real-Time Auto-Update Polling Script -->
+      <!-- Package Items Summary Card -->
+      <div class="daraz-card">
+        <div style="font-size:1.05rem; font-weight:800; color:var(--haat-green-dark); margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+          <span>Items in this Package (<?= count($items) ?>)</span>
+          <span style="font-size:0.82rem; font-weight:600; color:var(--text-muted);">Verified Artisanal Craftsmanship</span>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <?php foreach ($items as $it): ?>
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:#fdfbf8; border:1px solid var(--haat-border); border-radius:8px; font-size:0.88rem;">
+              <div style="display:flex; align-items:center; gap:14px;">
+                <?php if (!empty($it['featured_image'])): ?>
+                  <img src="<?= sanitize($it['featured_image']) ?>" alt="thumb" style="width:48px; height:48px; border-radius:6px; object-fit:cover; border:1px solid var(--haat-border);">
+                <?php else: ?>
+                  <div style="width:48px; height:48px; border-radius:6px; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-clay); font-size:1.2rem;">
+                    <i class="bi bi-box"></i>
+                  </div>
+                <?php endif; ?>
+                <div>
+                  <strong style="color:var(--text-main); font-size:0.92rem; display:block;"><?= sanitize($it['product_name']) ?></strong>
+                  <span style="font-size:0.75rem; color:var(--haat-clay);"><i class="bi bi-shop"></i> <?= sanitize($it['shop_name']) ?></span>
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-weight:800; color:var(--haat-green-dark); font-size:0.95rem;">
+                  <?= formatPrice($it['subtotal']) ?>
+                </div>
+                <div style="font-size:0.75rem; color:var(--text-muted);">
+                  <?= $it['quantity'] ?> × <?= formatPrice($it['price']) ?>
+                </div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+
+        <!-- Recipient & Delivery Details -->
+        <div style="background:var(--haat-cream); border-radius:8px; padding:16px 20px; font-size:0.85rem; margin-top:20px; display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px;">
+          <div>
+            <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Shipping Destination</span>
+            <strong style="color:var(--haat-green-dark);"><?= sanitize($order['shipping_name']) ?> (<?= sanitize($order['shipping_phone']) ?>)</strong>
+            <div style="color:var(--text-main); margin-top:2px;"><?= sanitize($order['shipping_address']) ?>, <?= sanitize($order['district']) ?></div>
+          </div>
+          <div>
+            <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; display:block;">Total Payment</span>
+            <strong style="font-size:1.1rem; color:var(--haat-green-dark);"><?= formatPrice($order['grand_total']) ?></strong>
+            <div style="color:var(--text-muted); margin-top:2px;">Method: <?= strtoupper($order['payment_method']) ?> (<?= ucfirst($order['payment_status']) ?>)</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Live Auto-Polling Engine -->
       <script>
-        const ORDER_NUMBER = '<?= addslashes($order['order_number']) ?>';
-        let currentKnownStatus = '<?= addslashes($order['order_status']) ?>';
+        const ORDER_NUM = '<?= addslashes($order['order_number']) ?>';
+        let currentStatus = '<?= addslashes($order['order_status']) ?>';
+        let currentLogStatus = '<?= addslashes($order['logistics_status'] ?? '') ?>';
 
-        function pollLiveTracking() {
-          fetch(`<?= BASE_URL ?>api/track.php?action=get&order=${encodeURIComponent(ORDER_NUMBER)}`)
-            .then(res => res.json())
+        function pollLiveDarazTracking() {
+          fetch(`<?= BASE_URL ?>api/track.php?action=get&order=${encodeURIComponent(ORDER_NUM)}`)
+            .then(r => r.json())
             .then(data => {
-              if (!data.success) return;
+              if (!data.success || !data.order) return;
 
-              const status = data.order.order_status;
-              if (status !== currentKnownStatus || data.events.length > 0) {
-                updateDarazTimeline(data);
-                currentKnownStatus = status;
+              const ord = data.order;
+              if (ord.order_status !== currentStatus || ord.logistics_status !== currentLogStatus) {
+                currentStatus = ord.order_status;
+                currentLogStatus = ord.logistics_status;
+                applyLiveUpdates(data);
               }
             })
-            .catch(err => console.error("Tracking poll error:", err));
+            .catch(e => console.error(e));
         }
 
-        function updateDarazTimeline(data) {
-          const status = data.order.order_status;
-          const lineFill = document.getElementById('daraz-line-fill');
+        function applyLiveUpdates(data) {
+          const ord = data.order;
+          const status = ord.order_status;
+          const logStatus = ord.logistics_status || '';
 
-          const stepReady = document.getElementById('step-ready');
-          const stepShipped = document.getElementById('step-shipped');
-          const stepDelivered = document.getElementById('step-delivered');
+          // 1. Update Stepper Nodes & Fill Bar
+          const fillBar = document.getElementById('daraz-stepper-fill');
+          const nodePacked = document.getElementById('step-node-packed');
+          const nodeHub = document.getElementById('step-node-hub');
+          const nodeOut = document.getElementById('step-node-out');
+          const nodeDelivered = document.getElementById('step-node-delivered');
 
-          // Progress line height
-          if (status === 'delivered') {
-            if (lineFill) lineFill.style.height = '100%';
-          } else if (status === 'shipped') {
-            if (lineFill) lineFill.style.height = '70%';
-          } else if (status === 'processing') {
-            if (lineFill) lineFill.style.height = '40%';
-          } else {
-            if (lineFill) lineFill.style.height = '10%';
+          if (status === 'delivered' || logStatus === 'delivered') {
+            if (fillBar) fillBar.style.width = '100%';
+            setNodeState(nodePacked, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeHub, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeOut, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeDelivered, 'is-done', '<i class="bi bi-house-check-fill"></i>');
+          } else if (logStatus === 'out_for_delivery') {
+            if (fillBar) fillBar.style.width = '75%';
+            setNodeState(nodePacked, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeHub, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeOut, 'is-active', '<i class="bi bi-bicycle"></i>');
+            setNodeState(nodeDelivered, '', '<i class="bi bi-house-door"></i>');
+          } else if (logStatus === 'hub_received' || status === 'shipped') {
+            if (fillBar) fillBar.style.width = '50%';
+            setNodeState(nodePacked, 'is-done', '<i class="bi bi-check-lg"></i>');
+            setNodeState(nodeHub, 'is-active', '<i class="bi bi-truck"></i>');
+            setNodeState(nodeOut, '', '<i class="bi bi-bicycle"></i>');
+            setNodeState(nodeDelivered, '', '<i class="bi bi-house-door"></i>');
+          } else if (logStatus === 'pickup_requested' || status === 'processing') {
+            if (fillBar) fillBar.style.width = '25%';
+            setNodeState(nodePacked, 'is-active', '<i class="bi bi-box-seam-fill"></i>');
+            setNodeState(nodeHub, '', '<i class="bi bi-truck"></i>');
+            setNodeState(nodeOut, '', '<i class="bi bi-bicycle"></i>');
+            setNodeState(nodeDelivered, '', '<i class="bi bi-house-door"></i>');
           }
 
-          // Step 2: Ready by Store
-          if (stepReady) {
-            const dot = stepReady.querySelector('.daraz-dot');
-            if (status === 'processing') {
-              dot.className = 'daraz-dot daraz-dot-active';
-              dot.innerHTML = '<i class="bi bi-box-seam"></i>';
-            } else if (status === 'shipped' || status === 'delivered') {
-              dot.className = 'daraz-dot daraz-dot-done';
-              dot.innerHTML = '<i class="bi bi-check-lg"></i>';
-            }
+          // 2. Update Rider Strip
+          if (ord.assigned_rider_name) {
+            const rElem = document.getElementById('txt-assigned-rider');
+            if (rElem) rElem.innerText = ord.assigned_rider_name + (ord.assigned_rider_phone ? ' (' + ord.assigned_rider_phone + ')' : '');
           }
 
-          // Step 3: Headed to Delivery
-          if (stepShipped) {
-            const dot = stepShipped.querySelector('.daraz-dot');
-            if (status === 'shipped') {
-              dot.className = 'daraz-dot daraz-dot-active';
-              dot.innerHTML = '<i class="bi bi-truck"></i>';
-            } else if (status === 'delivered') {
-              dot.className = 'daraz-dot daraz-dot-done';
-              dot.innerHTML = '<i class="bi bi-check-lg"></i>';
-            }
-          }
-
-          // Step 4: Delivered
-          if (stepDelivered) {
-            const dot = stepDelivered.querySelector('.daraz-dot');
-            if (status === 'delivered') {
-              dot.className = 'daraz-dot daraz-dot-done';
-              dot.innerHTML = '<i class="bi bi-house-check-fill"></i>';
-            }
-          }
-
-          // Update Delivery Partner Details
-          if (data.order.courier_partner) {
-            const pElem = document.getElementById('dp-partner-name');
-            if (pElem) pElem.innerHTML = `<i class="bi bi-truck text-clay"></i> ${escapeHtml(data.order.courier_partner)}`;
-          }
-          if (data.order.tracking_code) {
-            const tElem = document.getElementById('dp-tracking-code');
-            if (tElem) tElem.innerText = data.order.tracking_code;
-          }
-          if (data.order.estimated_delivery) {
-            const eElem = document.getElementById('dp-est-delivery');
-            if (eElem) eElem.innerText = data.order.estimated_delivery;
-          }
-
-          // Update Transit Checkpoints
-          const checkpointsList = document.getElementById('checkpoints-list');
-          if (checkpointsList && data.events) {
-            const shippedEvents = data.events.filter(e => e.status_key === 'shipped');
-            if (shippedEvents.length > 0) {
-              let cHtml = '';
-              shippedEvents.forEach(c => {
-                cHtml += `
-                  <div style="font-size:0.8rem; color:var(--text-main); display:flex; gap:8px;">
-                    <span style="color:var(--haat-clay); font-weight:700; flex-shrink:0;">• ${escapeHtml(c.time)}, ${escapeHtml(c.date)}:</span>
-                    <span><strong>${escapeHtml(c.title)}</strong> (${escapeHtml(c.location || c.actor)})</span>
+          // 3. Update Checkpoints List
+          if (data.events && data.events.length > 0) {
+            const container = document.getElementById('daraz-vt-container');
+            if (container) {
+              let html = '<div class="daraz-vt-line"></div>';
+              data.events.forEach((ev, idx) => {
+                const isLatest = (idx === 0);
+                html += `
+                  <div class="daraz-vt-item ${isLatest ? 'is-latest' : 'is-completed'}">
+                    <div class="daraz-vt-timestamp">
+                      <div class="daraz-vt-time">${escapeHtml(ev.time)}</div>
+                      <div class="daraz-vt-date">${escapeHtml(ev.date)}</div>
+                    </div>
+                    <div class="daraz-vt-dot"></div>
+                    <div class="daraz-vt-content">
+                      <div class="daraz-vt-title">${escapeHtml(ev.title)}</div>
+                      <div class="daraz-vt-desc">${escapeHtml(ev.note || ev.title)}</div>
+                      <div class="daraz-vt-location"><i class="bi bi-geo-alt"></i> ${escapeHtml(ev.location || ev.actor)}</div>
+                    </div>
                   </div>
                 `;
               });
-              checkpointsList.innerHTML = cHtml;
+              container.innerHTML = html;
             }
           }
         }
 
-        function escapeHtml(text) {
-          const div = document.createElement('div');
-          div.innerText = text || '';
-          return div.innerHTML;
+        function setNodeState(elem, stateClass, innerHtml) {
+          if (!elem) return;
+          elem.classList.remove('is-done', 'is-active');
+          if (stateClass) elem.classList.add(stateClass);
+          const bubble = elem.querySelector('.daraz-step-bubble');
+          if (bubble && innerHtml) bubble.innerHTML = innerHtml;
+        }
+
+        function escapeHtml(str) {
+          const p = document.createElement('p');
+          p.textContent = str || '';
+          return p.innerHTML;
         }
 
         // Live polling every 3 seconds
-        setInterval(pollLiveTracking, 3000);
+        setInterval(pollLiveDarazTracking, 3000);
       </script>
 
     <?php endif; ?>

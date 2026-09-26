@@ -145,7 +145,9 @@ if ($sortBy === 'price_asc') $orderClause = "COALESCE(p.sale_price, p.price) ASC
 if ($sortBy === 'price_desc') $orderClause = "COALESCE(p.sale_price, p.price) DESC";
 if ($sortBy === 'popular') $orderClause = "p.views DESC";
 
-$sql = "SELECT p.*, s.shop_name, s.district as seller_district, c.name as category_name, c.slug as category_slug, c.department 
+$sql = "SELECT p.*, s.shop_name, s.district as seller_district, s.is_verified as seller_verified, c.name as category_name, c.slug as category_slug, c.department,
+        COALESCE((SELECT AVG(rating) FROM product_reviews WHERE product_id = p.id), p.rating, 0.0) as rating,
+        (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id) as review_count
         FROM `products` p 
         JOIN `sellers` s ON p.seller_id = s.id 
         JOIN `categories` c ON p.category_id = c.id 
@@ -171,7 +173,9 @@ if (empty($products) && !empty($searchQuery) && !empty($categorySlug)) {
         }
         $fallbackParams[] = $paramValue;
     }
-    $fallbackSql = "SELECT p.*, s.shop_name, s.district as seller_district, c.name as category_name, c.slug as category_slug, c.department 
+    $fallbackSql = "SELECT p.*, s.shop_name, s.district as seller_district, s.is_verified as seller_verified, c.name as category_name, c.slug as category_slug, c.department,
+            COALESCE((SELECT AVG(rating) FROM product_reviews WHERE product_id = p.id), p.rating, 0.0) as rating,
+            (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id) as review_count
             FROM `products` p 
             JOIN `sellers` s ON p.seller_id = s.id 
             JOIN `categories` c ON p.category_id = c.id 
@@ -350,15 +354,20 @@ $districts = $db->query("SELECT DISTINCT district_origin FROM `products` WHERE i
                     <span class="badge badge-gold">-<?= $discount ?>%</span>
                   <?php endif; ?>
                 </div>
+                <?php if (!isSeller() && !isAdmin()): ?>
                 <button type="button" class="product-wishlist-btn <?= isInWishlist($prod['id']) ? 'active' : '' ?>" data-product-id="<?= $prod['id'] ?>" title="Save to Wishlist">
                   <i class="bi <?= isInWishlist($prod['id']) ? 'bi-heart-fill' : 'bi-heart' ?>" <?= isInWishlist($prod['id']) ? 'style="color:#e63946;"' : '' ?>></i>
                 </button>
+                <?php endif; ?>
               </div>
 
               <div class="product-body">
                 <div class="product-vendor-meta">
                   <a href="<?= BASE_URL ?>vendor.php?id=<?= $prod['seller_id'] ?>" class="vendor-link">
                     <i class="bi bi-shop"></i> <?= sanitize($prod['shop_name']) ?>
+                    <?php if (!empty($prod['seller_verified'])): ?>
+                      <i class="bi bi-patch-check-fill text-green" style="font-size:0.75rem;" title="Verified Store"></i>
+                    <?php endif; ?>
                   </a>
                   <span class="district-tag"><?= sanitize($prod['district_origin']) ?></span>
                 </div>
@@ -367,13 +376,10 @@ $districts = $db->query("SELECT DISTINCT district_origin FROM `products` WHERE i
                   <?= sanitize($prod['name']) ?>
                 </a>
 
-                <div class="product-rating">
-                  <i class="bi bi-star-fill"></i>
-                  <i class="bi bi-star-fill"></i>
-                  <i class="bi bi-star-fill"></i>
-                  <i class="bi bi-star-fill"></i>
-                  <i class="bi bi-star-half"></i>
-                  <span class="rating-count">(4.9)</span>
+                <div class="product-rating" data-product-id="<?= $prod['id'] ?>" data-seller-id="<?= $prod['seller_id'] ?>" style="display:flex; align-items:center; gap:5px; font-size:0.82rem; margin-bottom:8px;">
+                  <span style="color:#f59e0b; display:inline-flex; align-items:center; gap:2px;"><i class="bi bi-star-fill"></i></span>
+                  <span class="product-avg" style="font-weight:700; color:var(--text-main);"><?= number_format($prod['rating'] ?? 0, 1) ?></span>
+                  <small style="color:var(--text-muted);">(<span class="product-count"><?= (int)($prod['review_count'] ?? 0) ?></span>)</small>
                 </div>
 
                 <div class="product-footer">
@@ -391,6 +397,31 @@ $districts = $db->query("SELECT DISTINCT district_origin FROM `products` WHERE i
             </div>
           <?php endforeach; ?>
         </div>
+        <script>
+          // Batch refresh ratings for visible product cards
+          (function() {
+            const cards = Array.from(document.querySelectorAll('.product-rating[data-product-id]'));
+            if (!cards.length) return;
+            const pids = cards.map(c => c.getAttribute('data-product-id')).filter(Boolean).join(',');
+            if (!pids) return;
+
+            fetch('<?= BASE_URL ?>api/ratings.php?product_ids=' + pids)
+              .then(r => r.json())
+              .then(data => {
+                if (data && data.success && data.ratings) {
+                  cards.forEach(c => {
+                    const pid = c.getAttribute('data-product-id');
+                    if (data.ratings[pid]) {
+                      const avgEl = c.querySelector('.product-avg');
+                      const cntEl = c.querySelector('.product-count');
+                      if (avgEl) avgEl.textContent = parseFloat(data.ratings[pid].avg).toFixed(1);
+                      if (cntEl) cntEl.textContent = data.ratings[pid].count;
+                    }
+                  });
+                }
+              }).catch(()=>{});
+          })();
+        </script>
       <?php endif; ?>
 
     </main>

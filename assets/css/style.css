@@ -772,17 +772,28 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--haat-clay-light);
   color: var(--haat-clay);
   border: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.2rem;
+  font-size: 1.1rem;
   cursor: pointer;
   transition: var(--transition);
 }
 .btn-add-cart:hover {
   background: var(--haat-clay);
   color: #ffffff;
-  transform: scale(1.08);
+  transform: scale(1.06);
+}
+button.btn.btn-add-cart,
+.btn-add-cart.btn {
+  width: auto;
+  height: auto;
+  font-size: 0.82rem;
+  transform: none;
+}
+button.btn.btn-add-cart:hover,
+.btn-add-cart.btn:hover {
+  transform: translateY(-1px);
 }
 
 /* --------------------------------------------------------------------------

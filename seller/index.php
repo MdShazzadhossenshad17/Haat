@@ -73,41 +73,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_shop_settings'
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_update_order_status'])) {
     $itemId = (int)$_POST['item_id'];
     $newStatus = $_POST['vendor_status'] ?? '';
-    if (in_array($newStatus, ['pending', 'processing', 'shipped', 'delivered', 'cancelled'])) {
+    if (in_array($newStatus, ['pending', 'processing', 'packed', 'shipped', 'delivered', 'cancelled'])) {
         $up = $db->prepare("UPDATE `order_items` SET `vendor_status` = ? WHERE `id` = ? AND `seller_id` = ?");
         $up->execute([$newStatus, $itemId, $seller['id']]);
 
-        // Automatically log tracking event
-        $itemInfo = $db->query("SELECT oi.product_name, o.id as order_id, o.order_number, s.shop_name, s.district 
+        // Automatically log tracking event & notify customer + HAATEX logistics
+        $itemInfo = $db->query("SELECT oi.product_name, o.id as order_id, o.order_number, o.user_id, s.shop_name, s.district 
             FROM order_items oi 
             JOIN orders o ON oi.order_id = o.id 
             JOIN sellers s ON oi.seller_id = s.id 
             WHERE oi.id = {$itemId}")->fetch();
         if ($itemInfo) {
             $statusLabels = [
+                'pending' => 'Order Confirmed by Artisan',
                 'processing' => 'Artisan Crafting & Workshop Packaging',
-                'shipped' => 'Dispatched to Delivery Courier',
+                'packed' => 'Order Packed & HAATEX Delivery Pickup Requested',
+                'shipped' => 'Dispatched & Handed Over to HAATEX Logistics',
                 'delivered' => 'Artisan Item Delivered to Customer',
                 'cancelled' => 'Order Item Cancelled by Workshop'
             ];
             $title = ($statusLabels[$newStatus] ?? 'Order Item Status Updated') . ' - ' . $itemInfo['product_name'];
-            $note = "Workshop {$itemInfo['shop_name']} updated item status to " . strtoupper($newStatus) . ".";
+            $note = "Workshop {$itemInfo['shop_name']} updated status to " . strtoupper($newStatus) . ".";
+            
             $evIns = $db->prepare("INSERT INTO `order_tracking_events` (`order_id`, `order_number`, `title`, `actor`, `location`, `status_key`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
             $evIns->execute([
                 $itemInfo['order_id'],
                 $itemInfo['order_number'],
                 $title,
                 $itemInfo['shop_name'] . ' (Artisan)',
-                $itemInfo['district'] . ' Workshop',
+                $itemInfo['district'] . ' Workshop Hub',
                 $newStatus,
                 $note
             ]);
-            if ($newStatus === 'shipped') {
-                $db->prepare("UPDATE `orders` SET `order_status` = 'shipped' WHERE `id` = ? AND `order_status` IN ('pending', 'processing')")->execute([$itemInfo['order_id']]);
+
+            if ($newStatus === 'processing') {
+                $db->prepare("UPDATE `orders` SET `order_status` = 'processing', `logistics_status` = 'processing' WHERE `id` = ? AND `order_status` = 'pending'")->execute([$itemInfo['order_id']]);
+                
+                // Notify customer
+                if (!empty($itemInfo['user_id'])) {
+                    createNotification(
+                        $itemInfo['user_id'],
+                        "Crafting & Packaging in Progress: #{$itemInfo['order_number']}",
+                        "Workshop {$itemInfo['shop_name']} has begun packaging your {$itemInfo['product_name']}.",
+                        "order_processing",
+                        BASE_URL . "track-order.php?order=" . urlencode($itemInfo['order_number']),
+                        $seller['id'],
+                        $itemInfo['order_number']
+                    );
+                }
+            } elseif ($newStatus === 'packed') {
+                $db->prepare("UPDATE `orders` SET `logistics_status` = 'pickup_requested', `pickup_requested_at` = NOW() WHERE `id` = ?")->execute([$itemInfo['order_id']]);
+                
+                // Notify HAATEX Logistics team
+                notifyLogisticsAdmins(
+                    "Delivery Pickup Request: #{$itemInfo['order_number']}",
+                    "Artisan Workshop '{$itemInfo['shop_name']}' has packed order #{$itemInfo['order_number']} ({$itemInfo['product_name']}) and requested HAATEX courier pickup.",
+                    BASE_URL . "logistics/#orders",
+                    $itemInfo['order_number']
+                );
+
+                // Notify customer
+                if (!empty($itemInfo['user_id'])) {
+                    createNotification(
+                        $itemInfo['user_id'],
+                        "Order Packed: #{$itemInfo['order_number']}",
+                        "Your {$itemInfo['product_name']} has been carefully packed by {$itemInfo['shop_name']}. HAATEX courier pickup requested.",
+                        "order_packed",
+                        BASE_URL . "track-order.php?order=" . urlencode($itemInfo['order_number']),
+                        $seller['id'],
+                        $itemInfo['order_number']
+                    );
+                }
+            } elseif ($newStatus === 'shipped') {
+                $db->prepare("UPDATE `orders` SET `order_status` = 'shipped', `logistics_status` = 'hub_received' WHERE `id` = ? AND `order_status` IN ('pending', 'processing', 'packed')")->execute([$itemInfo['order_id']]);
+                dismissOrderNotifications($itemInfo['order_number']);
+            } elseif ($newStatus === 'delivered') {
+                $remUndelivered = (int)$db->query("SELECT COUNT(*) FROM `order_items` WHERE `order_id` = {$itemInfo['order_id']} AND `vendor_status` != 'delivered'")->fetchColumn();
+                if ($remUndelivered === 0) {
+                    $db->prepare("UPDATE `orders` SET `order_status` = 'delivered', `logistics_status` = 'delivered', `delivered_at` = NOW() WHERE `id` = ?")->execute([$itemInfo['order_id']]);
+                }
+                dismissOrderNotifications($itemInfo['order_number']);
             }
         }
 
-        setFlash('success', 'Fulfillment status updated and pushed to live tracking.');
+        setFlash('success', 'Fulfillment status updated and synchronized live with HAATEX Logistics.');
         header('Location: ' . BASE_URL . 'seller/#orders');
         exit;
     }
@@ -296,6 +345,7 @@ $productsList = $stmtProd->fetchAll();
 
 // All customer orders for "Customer Orders" tab
 $stmtOrders = $db->prepare("SELECT oi.*, o.user_id as customer_user_id, o.order_number, o.created_at, o.payment_method, o.payment_status, 
+    o.order_status as overall_order_status, o.logistics_status, o.tracking_code, o.assigned_rider_name, o.assigned_rider_phone,
     o.shipping_name, o.shipping_phone, o.shipping_address, o.district as ship_district, o.division as ship_division 
     FROM `order_items` oi 
     JOIN `orders` o ON oi.order_id = o.id 
@@ -317,7 +367,7 @@ $convStmt = $db->query("
            (SELECT created_at FROM messages WHERE seller_id = {$sellerId} AND ((sender_id = {$sellerUserId} AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = {$sellerUserId})) ORDER BY id DESC LIMIT 1) as last_message_time,
            (SELECT COUNT(*) FROM messages WHERE seller_id = {$sellerId} AND sender_id = u.id AND receiver_id = {$sellerUserId} AND is_read = 0) as unread_count
     FROM users u
-    WHERE u.role = 'customer' AND (
+    WHERE u.id != {$sellerUserId} AND (
         u.id IN (SELECT o.user_id FROM orders o JOIN order_items oi ON oi.order_id = o.id WHERE oi.seller_id = {$sellerId})
         OR u.id IN (SELECT sender_id FROM messages WHERE seller_id = {$sellerId} AND receiver_id = {$sellerUserId})
         OR u.id IN (SELECT receiver_id FROM messages WHERE seller_id = {$sellerId} AND sender_id = {$sellerUserId})
@@ -326,10 +376,22 @@ $convStmt = $db->query("
 ");
 $customerConversations = $convStmt->fetchAll();
 
-// Total unread messages for this seller
+// Total unread customer messages for this seller
 $unreadMessagesStmt = $db->prepare("SELECT COUNT(*) FROM messages WHERE seller_id = ? AND receiver_id = ? AND is_read = 0");
 $unreadMessagesStmt->execute([$sellerId, $sellerUserId]);
 $totalUnreadMessages = (int)$unreadMessagesStmt->fetchColumn();
+
+// Fetch Logistics Conversation Metadata for Seller
+$logisticsUser = $db->query("SELECT id, name, email, phone, avatar, COALESCE(is_online, 1) as is_online FROM `users` WHERE `role` = 'logistics' LIMIT 1")->fetch();
+$logisticsId = $logisticsUser ? (int)$logisticsUser['id'] : 7;
+
+$logMsgStmt = $db->prepare("SELECT message, created_at FROM `messages` WHERE seller_id = ? AND ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)) ORDER BY id DESC LIMIT 1");
+$logMsgStmt->execute([$sellerId, $sellerUserId, $logisticsId, $logisticsId, $sellerUserId]);
+$lastSellerLogMsg = $logMsgStmt->fetch();
+
+$logUnreadStmt = $db->prepare("SELECT COUNT(*) FROM `messages` WHERE seller_id = ? AND receiver_id = ? AND sender_id = ? AND is_read = 0");
+$logUnreadStmt->execute([$sellerId, $sellerUserId, $logisticsId]);
+$sellerLogUnreadCount = (int)$logUnreadStmt->fetchColumn();
 
 // Categories & Brands for "Add Product" inside Inventory tab
 $categories = $db->query("SELECT * FROM `categories` ORDER BY department ASC, id ASC")->fetchAll();
@@ -350,10 +412,11 @@ foreach ($notificationsList as $nItem) {
 // Preselected category if arrived from notification
 $selectedCatId = (int)($_GET['category_id'] ?? 0);
 
-// Header settings: Hide search, sub-navbar and cart for seller dashboard view
+// Header settings: Hide search, sub-navbar, cart, and buyer wishlist for seller dashboard view
 $hideSearch = true;
 $hideNavbar = true;
 $hideCart = true;
+$hideWishlist = true;
 $pageTitle = 'Seller Dashboard — ' . $seller['shop_name'];
 require_once __DIR__ . '/../includes/header.php';
 ?>
@@ -524,18 +587,18 @@ require_once __DIR__ . '/../includes/header.php';
 
       <!-- Navigation Tabs (Add Product is unified under Inventory) -->
       <nav style="display:flex; flex-direction:column; gap:4px;">
-        <a href="#overview" class="seller-tab-link active" data-tab="overview">
+        <a href="#overview" class="seller-tab-link active" data-tab="overview" onclick="switchSellerTab('overview')">
           <i class="bi bi-speedometer2"></i>
           <span>Dashboard</span>
         </a>
 
-        <a href="#products" class="seller-tab-link" data-tab="products">
+        <a href="#products" class="seller-tab-link" data-tab="products" onclick="switchSellerTab('products')">
           <i class="bi bi-boxes"></i>
           <span>My Products (<?= $prodCount ?>)</span>
         </a>
 
         <!-- Inventory tab (Housing Stock Levels and Add Product) -->
-        <a href="#inventory" class="seller-tab-link" data-tab="inventory">
+        <a href="#inventory" class="seller-tab-link" data-tab="inventory" onclick="switchSellerTab('inventory')">
           <i class="bi bi-clipboard2-data"></i>
           <span>Inventory</span>
           <?php if ($lowStockCount + $outOfStockCount > 0): ?>
@@ -545,22 +608,20 @@ require_once __DIR__ . '/../includes/header.php';
           <?php endif; ?>
         </a>
 
-        <a href="#orders" class="seller-tab-link" data-tab="orders">
+        <a href="#orders" class="seller-tab-link" data-tab="orders" onclick="switchSellerTab('orders')">
           <i class="bi bi-receipt"></i>
           <span>Customer Orders (<?= $orderStats['total_vendor_orders'] ?>)</span>
         </a>
 
-        <a href="#messages" class="seller-tab-link" data-tab="messages">
+        <a href="#messages" class="seller-tab-link" data-tab="messages" onclick="switchSellerTab('messages')">
           <i class="bi bi-chat-dots"></i>
           <span>Customer Messages</span>
-          <?php if ($totalUnreadMessages > 0): ?>
-            <span id="seller-nav-msg-badge" style="margin-left:auto; font-size:0.68rem; font-weight:700; padding:2px 7px; border-radius:10px; background:#b91c1c; color:#fff;">
-              <?= $totalUnreadMessages ?>
-            </span>
-          <?php endif; ?>
+          <span id="seller-nav-msg-badge" style="margin-left:auto; font-size:0.68rem; font-weight:700; padding:2px 7px; border-radius:10px; background:#b91c1c; color:#fff; <?= $totalUnreadMessages > 0 ? '' : 'display:none;' ?>">
+            <?= $totalUnreadMessages ?>
+          </span>
         </a>
 
-        <a href="#settings" class="seller-tab-link" data-tab="settings">
+        <a href="#settings" class="seller-tab-link" data-tab="settings" onclick="switchSellerTab('settings')">
           <i class="bi bi-gear"></i>
           <span>Workshop Settings</span>
         </a>
@@ -624,17 +685,15 @@ require_once __DIR__ . '/../includes/header.php';
           <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm);">
             <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; margin-bottom:4px;">Active Products</div>
             <div style="font-size:1.6rem; font-weight:800; color:var(--haat-clay);"><?= $prodCount ?> Items</div>
-            <span style="font-size:0.73rem; color:var(--text-muted);">Rating: <?= number_format($seller['rating'], 1) ?> ★</span>
+            <span style="font-size:0.73rem; color:var(--text-muted); font-weight:600;">Rating: <span style="color:#d97706;"><?= number_format($liveRating, 1) ?> ★</span> (<?= $reviewCount ?> reviews)</span>
           </div>
 
           <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-md); padding:18px; box-shadow:var(--shadow-sm);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
               <span style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Customer Messages</span>
-              <?php if ($totalUnreadMessages > 0): ?>
-                <span style="background:#fee2e2; color:#b91c1c; font-size:0.68rem; font-weight:700; padding:1px 6px; border-radius:10px;"><?= $totalUnreadMessages ?> New</span>
-              <?php endif; ?>
+              <span id="seller-overview-msg-badge" style="background:#fee2e2; color:#b91c1c; font-size:0.68rem; font-weight:700; padding:1px 6px; border-radius:10px; <?= $totalUnreadMessages > 0 ? '' : 'display:none;' ?>"><?= $totalUnreadMessages ?> New</span>
             </div>
-            <div style="font-size:1.6rem; font-weight:800; color:var(--haat-green);"><?= count($customerConversations) ?> Chats</div>
+            <div id="seller-overview-chat-count" style="font-size:1.6rem; font-weight:800; color:var(--haat-green);"><?= count($customerConversations) ?> Chats</div>
             <span style="font-size:0.73rem; color:var(--text-muted);"><a href="javascript:void(0)" onclick="switchSellerTab('messages')" style="color:var(--haat-clay); font-weight:600;">Open Live Chat &rarr;</a></span>
           </div>
         </div>
@@ -1112,25 +1171,49 @@ require_once __DIR__ . '/../includes/header.php';
                         </span>
                       </td>
                       <td style="padding:16px 10px; white-space:nowrap;">
-                        <div style="display:flex; align-items:center; gap:6px;">
-                          <form method="POST" action="<?= BASE_URL ?>seller/" style="display:flex; align-items:center; gap:6px; margin:0;">
-                            <input type="hidden" name="action_update_order_status" value="1">
-                            <input type="hidden" name="item_id" value="<?= $ord['id'] ?>">
-                            <select name="vendor_status" style="padding:6px 10px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.82rem; font-weight:600; outline:none; background:#fff;">
-                              <option value="pending" <?= $ord['vendor_status'] === 'pending' ? 'selected' : '' ?>>Pending</option>
-                              <option value="processing" <?= $ord['vendor_status'] === 'processing' ? 'selected' : '' ?>>Processing / Crafting</option>
-                              <option value="shipped" <?= $ord['vendor_status'] === 'shipped' ? 'selected' : '' ?>>Dispatched / Shipped</option>
-                              <option value="delivered" <?= $ord['vendor_status'] === 'delivered' ? 'selected' : '' ?>>Delivered</option>
-                              <option value="cancelled" <?= $ord['vendor_status'] === 'cancelled' ? 'selected' : '' ?>>Cancelled</option>
-                            </select>
-                            <button type="submit" class="btn btn-sm btn-outline-green" style="padding:4px 8px;" title="Save Status">
-                              <i class="bi bi-check-lg"></i>
+                        <div style="display:flex; flex-direction:column; gap:6px;">
+                          <div style="display:flex; align-items:center; gap:6px;">
+                            <form method="POST" action="<?= BASE_URL ?>seller/" style="display:flex; align-items:center; gap:6px; margin:0;">
+                              <input type="hidden" name="action_update_order_status" value="1">
+                              <input type="hidden" name="item_id" value="<?= $ord['id'] ?>">
+                              <select name="vendor_status" style="padding:6px 10px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.82rem; font-weight:600; outline:none; background:#fff;">
+                                <option value="pending" <?= $ord['vendor_status'] === 'pending' ? 'selected' : '' ?>>1. Confirmed (Pending)</option>
+                                <option value="processing" <?= $ord['vendor_status'] === 'processing' ? 'selected' : '' ?>>2. Packaging / Crafting</option>
+                                <option value="packed" <?= $ord['vendor_status'] === 'packed' ? 'selected' : '' ?>>3. Packed & Request HAATEX</option>
+                                <option value="shipped" <?= $ord['vendor_status'] === 'shipped' ? 'selected' : '' ?>>4. Handover to HAATEX</option>
+                                <option value="delivered" <?= $ord['vendor_status'] === 'delivered' ? 'selected' : '' ?>>5. Delivered</option>
+                                <option value="cancelled" <?= $ord['vendor_status'] === 'cancelled' ? 'selected' : '' ?>>6. Cancelled</option>
+                              </select>
+                              <button type="submit" class="btn btn-sm btn-outline-green" style="padding:4px 8px;" title="Save Status">
+                                <i class="bi bi-check-lg"></i>
+                              </button>
+                            </form>
+                            <a href="<?= BASE_URL ?>invoice.php?order=<?= urlencode($ord['order_number']) ?>&seller_id=<?= (int)$seller['id'] ?>" target="_blank" class="btn btn-sm btn-outline-green" style="padding:5px 9px; font-size:0.8rem; display:inline-flex; align-items:center; gap:4px;" title="Print Artisan Packing Slip & Invoice">
+                              <i class="bi bi-printer"></i> Invoice
+                            </a>
+                            <?php if (!empty($ord['customer_user_id'])): ?>
+                              <button type="button" onclick="openChatWithCustomer(<?= (int)$ord['customer_user_id'] ?>, '<?= sanitize($ord['order_number']) ?>', '<?= sanitize($ord['product_name']) ?>')" class="btn btn-sm btn-outline-clay" style="padding:5px 9px; font-size:0.8rem; display:inline-flex; align-items:center; gap:4px;" title="Chat with Buyer">
+                                <i class="bi bi-chat-dots-fill"></i> Chat
+                              </button>
+                            <?php endif; ?>
+                            <button type="button" onclick="openChatWithLogistics('<?= sanitize($ord['order_number']) ?>', '<?= sanitize($ord['product_name']) ?>')" class="btn btn-sm btn-outline-green" style="padding:5px 9px; font-size:0.8rem; display:inline-flex; align-items:center; gap:4px;" title="Message HAATEX Logistics Hub regarding this order">
+                              <i class="bi bi-truck"></i> HAATEX Desk
                             </button>
-                          </form>
-                          <?php if (!empty($ord['customer_user_id'])): ?>
-                            <button type="button" onclick="openChatWithCustomer(<?= (int)$ord['customer_user_id'] ?>, '<?= sanitize($ord['order_number']) ?>', '<?= sanitize($ord['product_name']) ?>')" class="btn btn-sm btn-outline-clay" style="padding:5px 9px; font-size:0.8rem; display:inline-flex; align-items:center; gap:4px;" title="Chat with Buyer">
-                              <i class="bi bi-chat-dots-fill"></i> Chat
-                            </button>
+                          </div>
+
+                          <!-- Live HAATEX Logistics Status Badge -->
+                          <?php if (!empty($ord['tracking_code'])): ?>
+                            <div style="font-size:0.73rem; color:var(--text-muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                              <span style="font-weight:700; color:var(--haat-clay);"><i class="bi bi-truck"></i> HAATEX:</span>
+                              <span class="badge" style="background:#f1f5f9; color:var(--haat-green-dark); font-size:0.7rem; padding:2px 6px; font-weight:700;">
+                                <?= !empty($ord['logistics_status']) ? ucwords(str_replace('_', ' ', $ord['logistics_status'])) : 'Pending Pickup' ?>
+                              </span>
+                              <?php if (!empty($ord['assigned_rider_name'])): ?>
+                                <span style="font-size:0.72rem; color:var(--haat-green); font-weight:600;" title="Assigned Delivery Rider: <?= sanitize($ord['assigned_rider_name']) ?>">
+                                  • Rider: <?= sanitize($ord['assigned_rider_name']) ?>
+                                </span>
+                              <?php endif; ?>
+                            </div>
                           <?php endif; ?>
                         </div>
                       </td>
@@ -1145,51 +1228,119 @@ require_once __DIR__ . '/../includes/header.php';
       </div>
 
       <!-- ==========================================
-           TAB 5: CUSTOMER MESSAGES (LIVE MESSAGING SYSTEM)
+           TAB 5: ARTISAN & HAATEX LIVE MESSENGER
            ========================================== -->
       <div id="panel-messages" class="seller-panel" style="display:none;">
         <div style="background:#fff; border:1px solid var(--haat-border); border-radius:var(--radius-lg); overflow:hidden; box-shadow:var(--shadow-sm);">
           
           <!-- Header Bar -->
-          <div style="padding:16px 24px; border-bottom:1px solid var(--haat-border); background:#ffffff; display:flex; align-items:center;">
-            <h2 style="font-size:1.3rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:10px;">
-              <i class="bi bi-chat-dots-fill text-clay"></i> Artisan-Customer Live Messenger
-            </h2>
+          <div style="padding:16px 24px; border-bottom:1px solid var(--haat-border); background:#ffffff; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+            <div>
+              <h2 style="font-size:1.3rem; color:var(--haat-green-dark); margin:0; display:flex; align-items:center; gap:10px;">
+                <i class="bi bi-chat-dots-fill text-clay"></i> Artisan Live Messenger & Logistics Desk
+              </h2>
+              <p style="font-size:0.82rem; color:var(--text-muted); margin:3px 0 0;">
+                Direct live messaging with customer buyers and HAATEX delivery operations hub
+              </p>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="badge" style="background:#f0fdf4; color:#15803d; border:1px solid #bbf7d0; font-size:0.75rem; padding:4px 10px;">
+                ● Live Dispatch Desk Connected
+              </span>
+            </div>
           </div>
 
           <!-- Split-Screen Messenger Workspace -->
-          <div style="display:grid; grid-template-columns: 320px 1fr; min-height: 600px;">
+          <div style="display:grid; grid-template-columns: 330px 1fr; height: 620px; max-height: 620px;">
             
-            <!-- Left Column: Customer Conversations List -->
-            <div style="border-right:1px solid var(--haat-border); background:#fcfbfa; display:flex; flex-direction:column;">
+            <!-- Left Column: Channel & Conversation Threads List -->
+            <div style="border-right:1px solid var(--haat-border); background:#fcfbfa; display:flex; flex-direction:column; height: 620px; min-height: 0; max-height: 620px; overflow: hidden;">
               
-              <!-- Search Customers / Orders -->
-              <div style="padding:14px; border-bottom:1px solid var(--haat-border); background:#ffffff;">
-                <div style="position:relative;">
+              <!-- Channel Filter Chips & Search -->
+              <div style="padding:12px 14px; border-bottom:1px solid var(--haat-border); background:#ffffff; flex-shrink: 0;">
+                <div style="position:relative; margin-bottom:10px;">
                   <i class="bi bi-search" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--text-muted); font-size:0.85rem;"></i>
-                  <input type="text" id="seller-search-conv" oninput="filterSellerConversations()" placeholder="Search buyer or order #..." style="width:100%; padding:8px 12px 8px 34px; border:1px solid var(--haat-border); border-radius:20px; font-size:0.85rem; outline:none; background:#f9fafb;">
+                  <input type="text" id="seller-search-conv" oninput="filterSellerConversations()" placeholder="Search buyer or order #..." style="width:100%; padding:7px 12px 7px 34px; border:1px solid var(--haat-border); border-radius:20px; font-size:0.82rem; outline:none; background:#f9fafb;">
+                </div>
+
+                <div style="display:flex; gap:6px;">
+                  <button type="button" id="filter-btn-all" onclick="filterSellerChannel('all')" class="badge" style="background:var(--haat-green); color:#fff; border:none; padding:4px 10px; cursor:pointer; font-weight:600; font-size:0.72rem; border-radius:12px;">
+                    All
+                  </button>
+                  <button type="button" id="filter-btn-logistics" onclick="filterSellerChannel('logistics')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); padding:4px 10px; cursor:pointer; font-weight:600; font-size:0.72rem; border-radius:12px;">
+                    🚚 HAATEX Desk <?= $sellerLogUnreadCount > 0 ? "({$sellerLogUnreadCount})" : '' ?>
+                  </button>
+                  <button type="button" id="filter-btn-customers" onclick="filterSellerChannel('customers')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); padding:4px 10px; cursor:pointer; font-weight:600; font-size:0.72rem; border-radius:12px;">
+                    👥 Buyers <?= $totalUnreadMessages > 0 ? "({$totalUnreadMessages})" : '' ?>
+                  </button>
                 </div>
               </div>
 
-              <!-- Conversation Threads List -->
-              <div id="seller-conv-list" style="flex:1; overflow-y:auto; max-height:550px;">
+              <!-- Conversation Threads List Container -->
+              <div id="seller-conv-list" style="flex:1 1 0%; min-height:0; overflow-y:auto;">
+                
+                <!-- PINNED CHANNEL 1: HAATEX DELIVERY HUB DESK -->
+                <div id="seller-logistics-channel-item" 
+                     class="seller-conv-item channel-logistics"
+                     onclick="selectSellerLogisticsConversation()"
+                     style="padding:12px 14px; border-bottom:2px solid #e8ede9; cursor:pointer; display:flex; gap:12px; align-items:center; transition:background 0.2s; position:relative; background:#f4f9f4; border-left:3px solid var(--haat-green);">
+                  
+                  <div style="position:relative; flex-shrink:0;">
+                    <div style="width:44px; height:44px; border-radius:12px; background:linear-gradient(135deg, #1b3d22, #2d5a36); color:var(--haat-sand); display:flex; align-items:center; justify-content:center; font-size:1.3rem; box-shadow:0 2px 6px rgba(27,61,34,0.25);">
+                      <i class="bi bi-truck"></i>
+                    </div>
+                    <span class="seller-log-dot" style="position:absolute; bottom:-2px; right:-2px; width:11px; height:11px; background:#2ecc71; border-radius:50%; border:2px solid #fff;" title="Operations Desk Active"></span>
+                  </div>
+
+                  <div style="flex:1; min-width:0;">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                      <strong style="font-size:0.88rem; color:var(--haat-green-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                        HAATEX Delivery Hub
+                      </strong>
+                      <span class="seller-log-time" style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
+                        <?= !empty($lastSellerLogMsg['created_at']) ? date('h:i A', strtotime($lastSellerLogMsg['created_at'])) : 'Desk' ?>
+                      </span>
+                    </div>
+
+                    <div style="font-size:0.72rem; color:var(--haat-clay); font-weight:700; display:flex; align-items:center; gap:4px; margin:1px 0;">
+                      <i class="bi bi-shield-check" style="font-size:0.75rem;"></i>
+                      <span>Official Courier Hub Desk</span>
+                    </div>
+
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                      <div class="seller-log-preview" style="font-size:0.74rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
+                        <?= sanitize($lastSellerLogMsg['message'] ?? 'Click to message delivery & pickup desk...') ?>
+                      </div>
+                      <span class="seller-log-unread-pill" style="font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px; <?= $sellerLogUnreadCount > 0 ? '' : 'display:none;' ?>">
+                        <?= $sellerLogUnreadCount ?>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- SECTION DIVIDER -->
+                <div id="seller-buyers-divider" style="padding:6px 14px; font-size:0.7rem; font-weight:700; text-transform:uppercase; color:var(--text-muted); background:#faf8f5; border-bottom:1px solid #f0ebe4; letter-spacing:0.4px;">
+                  Customer Buyer Chats
+                </div>
+
+                <!-- CUSTOMER CONVERSATION ITEMS -->
                 <?php if (empty($customerConversations)): ?>
-                  <div style="text-align:center; padding:50px 20px; color:var(--text-muted);">
-                    <i class="bi bi-chat-heart text-clay" style="font-size:2.4rem; display:block; margin-bottom:10px;"></i>
-                    <strong style="color:var(--haat-green-dark); font-size:0.95rem; display:block;">No customer chats yet</strong>
-                    <p style="font-size:0.8rem; margin-top:4px;">When buyers place orders or ask questions about your artisanal products, conversations will appear here.</p>
+                  <div id="seller-empty-cust-notice" style="text-align:center; padding:40px 20px; color:var(--text-muted);">
+                    <i class="bi bi-chat-heart text-clay" style="font-size:2.2rem; display:block; margin-bottom:8px;"></i>
+                    <strong style="color:var(--haat-green-dark); font-size:0.92rem; display:block;">No customer chats yet</strong>
+                    <p style="font-size:0.78rem; margin-top:4px;">When buyers inquire about products or orders, threads will appear here.</p>
                   </div>
                 <?php else: ?>
                   <?php foreach ($customerConversations as $idx => $conv): ?>
-                    <div class="seller-conv-item <?= $idx === 0 ? 'active' : '' ?>" 
+                    <div class="seller-conv-item channel-customer" 
                          data-customer-id="<?= $conv['customer_id'] ?>"
                          data-order-num="<?= sanitize($conv['order_number'] ?? '') ?>"
                          data-product-name="<?= sanitize($conv['product_name'] ?? '') ?>"
                          data-customer-name="<?= sanitize($conv['customer_name']) ?>"
                          data-customer-phone="<?= sanitize($conv['customer_phone'] ?? '') ?>"
                          data-is-online="<?= $conv['is_online'] ? 1 : 0 ?>"
-                         onclick="selectCustomerConversation(<?= $conv['customer_id'] ?>, '<?= sanitize($conv['order_number'] ?? '') ?>', '<?= sanitize($conv['product_name'] ?? '') ?>', <?= $conv['is_online'] ? 1 : 0 ?>, '<?= sanitize($conv['customer_name']) ?>', '<?= sanitize($conv['customer_phone'] ?? '') ?>')"
-                         style="padding:12px 14px; border-bottom:1px solid #f0ebe4; cursor:pointer; display:flex; gap:12px; align-items:center; transition:background 0.2s; position:relative; background:<?= $idx === 0 ? '#ffffff' : 'transparent' ?>; <?= $idx === 0 ? 'border-left:3px solid var(--haat-clay);' : '' ?>">
+                         onclick="selectCustomerConversation(<?= $conv['customer_id'] ?>, '<?= addslashes(sanitize($conv['order_number'] ?? '')) ?>', '<?= addslashes(sanitize($conv['product_name'] ?? '')) ?>', <?= $conv['is_online'] ? 1 : 0 ?>, '<?= addslashes(sanitize($conv['customer_name'])) ?>', '<?= addslashes(sanitize($conv['customer_phone'] ?? '')) ?>')"
+                         style="padding:12px 14px; border-bottom:1px solid #f0ebe4; cursor:pointer; display:flex; gap:12px; align-items:center; transition:background 0.2s; position:relative; background:transparent;">
                       
                       <!-- Customer Avatar with Online Dot -->
                       <div style="position:relative; flex-shrink:0;">
@@ -1206,7 +1357,7 @@ require_once __DIR__ . '/../includes/header.php';
                             <?= sanitize($conv['customer_name']) ?>
                           </strong>
                           <?php if (!empty($conv['last_message_time'])): ?>
-                            <span style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
+                            <span class="seller-conv-time" style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">
                               <?= date('h:i A', strtotime($conv['last_message_time'])) ?>
                             </span>
                           <?php endif; ?>
@@ -1223,7 +1374,7 @@ require_once __DIR__ . '/../includes/header.php';
                         <?php endif; ?>
 
                         <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-                          <div style="font-size:0.74rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
+                          <div class="seller-conv-preview" style="font-size:0.74rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
                             <?= sanitize($conv['last_message'] ?? 'Click to chat...') ?>
                           </div>
                           <?php if ($conv['unread_count'] > 0): ?>
@@ -1242,69 +1393,55 @@ require_once __DIR__ . '/../includes/header.php';
             </div>
 
             <!-- Right Column: Active Live Chat Window -->
-            <div style="display:flex; flex-direction:column; background:#ffffff;">
+            <div style="display:flex; flex-direction:column; height: 620px; min-height: 0; max-height: 620px; background:#ffffff; overflow: hidden;">
               
               <!-- Chat Header -->
-              <div id="seller-chat-header" style="padding:14px 20px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#ffffff;">
+              <div id="seller-chat-header" style="padding:14px 20px; border-bottom:1px solid var(--haat-border); display:flex; justify-content:space-between; align-items:center; background:#ffffff; flex-shrink: 0;">
                 <div style="display:flex; align-items:center; gap:12px;">
                   <div style="position:relative;">
                     <div id="seller-chat-avatar" style="width:42px; height:42px; border-radius:50%; background:var(--haat-sand); display:flex; align-items:center; justify-content:center; color:var(--haat-green); font-size:1.15rem; font-weight:700;">
-                      <?= !empty($customerConversations) ? strtoupper(substr($customerConversations[0]['customer_name'], 0, 1)) : 'C' ?>
+                      <i class="bi bi-truck"></i>
                     </div>
-                    <span id="seller-chat-avatar-status" style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:<?= (!empty($customerConversations) && $customerConversations[0]['is_online']) ? '#2ecc71' : '#cbd5e1' ?>; border-radius:50%; border:2px solid #fff;"></span>
+                    <span id="seller-chat-avatar-status" style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:#2ecc71; border-radius:50%; border:2px solid #fff;"></span>
                   </div>
 
                   <div>
                     <strong id="seller-chat-title" style="color:var(--haat-green-dark); font-size:0.98rem; display:block;">
-                      <?= !empty($customerConversations) ? sanitize($customerConversations[0]['customer_name']) : 'Select a Customer' ?>
+                      HAATEX Delivery Hub Desk
                     </strong>
                     <span id="seller-chat-subtitle" style="font-size:0.75rem; color:var(--text-muted); display:flex; align-items:center; gap:6px;">
-                      <?= !empty($customerConversations) && !empty($customerConversations[0]['customer_phone']) ? '<i class="bi bi-telephone"></i> ' . sanitize($customerConversations[0]['customer_phone']) : 'Buyer Account' ?>
+                      <i class="bi bi-shield-check text-green"></i> Official Logistics Operations Desk
                     </span>
                   </div>
                 </div>
 
                 <!-- Order Reference Tag -->
                 <div id="seller-chat-order-tag">
-                  <span id="seller-chat-order-label" class="badge" style="background:#f7efe6; color:var(--haat-clay); font-size:0.84rem; font-weight:700; padding:6px 12px; border-radius:6px; letter-spacing:0.3px; <?= (empty($customerConversations) || empty($customerConversations[0]['order_number'])) ? 'display:none;' : '' ?>">
-                    <?php if (!empty($customerConversations) && !empty($customerConversations[0]['order_number'])): ?>
-                      #<?= sanitize($customerConversations[0]['order_number']) ?>
-                    <?php endif; ?>
+                  <span id="seller-chat-order-label" class="badge" style="background:#f7efe6; color:var(--haat-clay); font-size:0.84rem; font-weight:700; padding:6px 12px; border-radius:6px; letter-spacing:0.3px; display:none;">
                   </span>
                 </div>
               </div>
 
-              <!-- Message Stream Bubbles -->
-              <div id="seller-chat-stream" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#f9f9f9; min-height:380px;">
+              <!-- Message Stream Bubbles (Pinned Scrolling Container) -->
+              <div id="seller-chat-stream" style="flex:1 1 0%; min-height:0; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#f9f9f9;">
                 <div style="text-align:center; padding:40px; color:var(--text-muted); font-size:0.9rem;">
-                  <i class="bi bi-chat-heart text-clay" style="font-size:2.4rem; display:block; margin-bottom:10px;"></i>
-                  Loading customer conversation...
+                  <i class="bi bi-truck text-clay" style="font-size:2.4rem; display:block; margin-bottom:10px;"></i>
+                  Loading conversation...
                 </div>
               </div>
 
-              <!-- Chat Input Bar -->
-              <div style="border-top:1px solid var(--haat-border); padding:12px 18px; background:#ffffff;">
+              <!-- Chat Input Bar (ALWAYS Visible at Bottom) -->
+              <div style="border-top:1px solid var(--haat-border); padding:12px 18px; background:#ffffff; flex-shrink: 0;">
                 
-                <!-- Quick Suggestion Tags for Artisan -->
-                <div style="display:flex; gap:6px; margin-bottom:10px; overflow-x:auto; padding-bottom:4px;">
-                  <button type="button" onclick="setSellerQuickMsg('Assalamu Alaikum! How can we assist you with our craft?')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
-                    👋 Assalamu Alaikum
-                  </button>
-                  <button type="button" onclick="setSellerQuickMsg('Your parcel is carefully packed and scheduled for courier pickup.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
-                    🚚 Dispatched via courier
-                  </button>
-                  <button type="button" onclick="setSellerQuickMsg('We are handcrafting your item in our workshop with authentic materials.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
-                    🧵 Handcrafting now
-                  </button>
-                  <button type="button" onclick="setSellerQuickMsg('Thank you for supporting authentic Bangladeshi artisanal heritage!')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
-                    ✨ Thank you for supporting
-                  </button>
+                <!-- Quick Suggestion Tags (Dynamically Swapped for HAATEX Hub vs Customer) -->
+                <div id="seller-quick-tags-container" style="display:flex; gap:6px; margin-bottom:10px; overflow-x:auto; padding-bottom:4px;">
+                  <!-- Dynamically populated by renderSellerQuickSuggestions() -->
                 </div>
 
                 <!-- Input Form -->
                 <form id="seller-chat-form" onsubmit="sendSellerMessage(event)" style="display:flex; gap:10px; align-items:center;">
-                  <input type="hidden" id="seller-chat-customer-id" value="<?= !empty($customerConversations) ? (int)$customerConversations[0]['customer_id'] : 0 ?>">
-                  <input type="text" id="seller-chat-input" placeholder="Type a message to buyer..." required autocomplete="off" style="flex:1; padding:10px 16px; border:1px solid var(--haat-border); border-radius:24px; font-size:0.9rem; outline:none; transition:var(--transition);" onfocus="this.style.borderColor='var(--haat-clay)';" onblur="this.style.borderColor='var(--haat-border)';">
+                  <input type="hidden" id="seller-chat-customer-id" value="0">
+                  <input type="text" id="seller-chat-input" placeholder="Type a message to HAATEX Logistics Desk..." required autocomplete="off" style="flex:1; padding:10px 16px; border:1px solid var(--haat-border); border-radius:24px; font-size:0.9rem; outline:none; transition:var(--transition);" onfocus="this.style.borderColor='var(--haat-clay)';" onblur="this.style.borderColor='var(--haat-border)';">
                   <button type="submit" id="seller-chat-send-btn" class="btn btn-clay" style="width:42px; height:42px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                     <i class="bi bi-send-fill" style="margin-left:2px;"></i>
                   </button>
@@ -1357,6 +1494,14 @@ require_once __DIR__ . '/../includes/header.php';
                 <label style="font-weight:600; font-size:0.88rem; display:block; margin-bottom:4px;">District Origin *</label>
                 <input type="text" name="district" required value="<?= sanitize($seller['district']) ?>" style="width:100%; padding:10px 14px; border:1px solid var(--haat-border); border-radius:var(--radius-sm); font-size:0.92rem; outline:none;">
               </div>
+            </div>
+
+            <div style="margin-bottom:16px;">
+              <label style="font-weight:600; font-size:0.88rem; display:block; margin-bottom:6px;">Allow Purchases from Your Own Shop</label>
+              <div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:6px;">When enabled, your seller account may purchase items from your own workshop (for testing). Default is disabled.</div>
+              <label style="display:inline-flex; align-items:center; gap:8px;">
+                <input type="checkbox" name="allow_self_purchase" value="1" <?= $seller['allow_self_purchase'] ? 'checked' : '' ?>> Enable self-purchase
+              </label>
             </div>
 
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px;">
@@ -1412,12 +1557,20 @@ require_once __DIR__ . '/../includes/header.php';
 </div>
 
 <script>
-  // Unified Seller Dashboard Tab Switching
+  // Unified Seller Dashboard Tab Switching & Messaging State
+  console.debug('Seller dashboard script loaded');
+  let activeConversationType = 'logistics'; // 'logistics' | 'customer'
   let activeCustomerId = <?= !empty($customerConversations) ? (int)$customerConversations[0]['customer_id'] : 0 ?>;
+  let activeOrderNumber = '';
+  let activeProductName = '';
+  let lastSellerMsgCount = -1;
   let sellerChatPollTimer = null;
 
   // Unified Seller Dashboard Tab Switching
   function switchSellerTab(tabId) {
+    try {
+      console.debug('switchSellerTab called with', tabId);
+    } catch(e) {}
     if (tabId === 'add-product') {
       switchSellerTab('inventory');
       switchInventoryView('add');
@@ -1454,13 +1607,15 @@ require_once __DIR__ . '/../includes/header.php';
     // Update URL hash without causing full page reload
     window.location.hash = tabId;
 
+    try { console.debug('Activated seller tab', tabId); } catch(e) {}
+
     if (tabId === 'messages') {
-      if (activeCustomerId) {
+      if (activeConversationType === 'logistics') {
+        selectSellerLogisticsConversation(activeOrderNumber, activeProductName);
+      } else if (activeCustomerId) {
         loadSellerMessages(activeCustomerId);
       }
-      startSellerChatPolling();
-    } else {
-      stopSellerChatPolling();
+      pollSellerConversations();
     }
   }
 
@@ -1521,6 +1676,9 @@ require_once __DIR__ . '/../includes/header.php';
       switchSellerTab('overview');
     }
 
+    // Start background polling for messages & notifications
+    startSellerChatPolling();
+
     // Click handler for tab links
     document.querySelectorAll('.seller-tab-link').forEach(link => {
       link.addEventListener('click', (e) => {
@@ -1530,6 +1688,39 @@ require_once __DIR__ . '/../includes/header.php';
       });
     });
   });
+
+  // Fallback initializer: ensure bindings and initial state even if DOMContentLoaded didn't fire
+  function ensureSellerTabBindings() {
+    try {
+      console.debug('ensureSellerTabBindings running');
+      // Attach click handlers if missing
+      const links = document.querySelectorAll('.seller-tab-link');
+      if (links.length === 0) {
+        console.warn('No .seller-tab-link elements found');
+      }
+      links.forEach(link => {
+        if (!link.hasAttribute('data-has-binding')) {
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const tab = link.getAttribute('data-tab');
+            switchSellerTab(tab);
+          });
+          link.setAttribute('data-has-binding', '1');
+        }
+      });
+
+      // Ensure at least the overview panel is visible
+      const visible = Array.from(document.querySelectorAll('.seller-panel')).some(p => p.style.display !== 'none');
+      if (!visible) {
+        switchSellerTab(window.location.hash.replace('#','') || 'overview');
+      }
+    } catch (err) {
+      console.error('ensureSellerTabBindings error', err);
+    }
+  }
+
+  // Run fallback after short delay to catch late-loading DOM or script ordering issues
+  setTimeout(ensureSellerTabBindings, 350);
 
   // Handle browser back/forward buttons
   window.addEventListener('hashchange', () => {
@@ -1543,11 +1734,170 @@ require_once __DIR__ . '/../includes/header.php';
   });
 
   // ==========================================
-  // ARTISAN LIVE MESSAGING SYSTEM LOGIC
+  // ARTISAN LIVE MESSAGING SYSTEM LOGIC (DUAL-CHANNEL)
   // ==========================================
+
+  function renderSellerQuickSuggestions() {
+    const container = document.getElementById('seller-quick-tags-container');
+    if (!container) return;
+
+    if (activeConversationType === 'logistics') {
+      container.innerHTML = `
+        <button type="button" onclick="setSellerQuickMsg('📦 Requesting HAATEX courier pickup for packed artisanal orders.')" class="badge" style="background:#f0fdf4; color:#15803d; border:1px solid #bbf7d0; cursor:pointer; font-weight:600; font-size:0.75rem; white-space:nowrap;">
+          📦 Request Courier Pickup
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('⏱️ When will the assigned delivery rider arrive at our workshop?')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          ⏱️ Rider Pickup ETA?
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('📍 Please confirm our workshop address for parcel handover.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          📍 Confirm Workshop Location
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('🛡️ Fragile handicraft parcel is bubble-wrapped and ready for pickup.')" class="badge" style="background:#fef3c7; color:#92400e; border:1px solid #fde68a; cursor:pointer; font-weight:600; font-size:0.75rem; white-space:nowrap;">
+          🛡️ Fragile Craft Ready
+        </button>
+      `;
+    } else {
+      container.innerHTML = `
+        <button type="button" onclick="setSellerQuickMsg('Assalamu Alaikum! How can we assist you with our craft?')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          👋 Assalamu Alaikum
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('Your parcel is carefully packed and scheduled for courier pickup.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          🚚 Dispatched via courier
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('We are handcrafting your item in our workshop with authentic materials.')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          🧵 Handcrafting now
+        </button>
+        <button type="button" onclick="setSellerQuickMsg('Thank you for supporting authentic Bangladeshi artisanal heritage!')" class="badge" style="background:#f4f4f4; color:var(--text-main); border:1px solid var(--haat-border); cursor:pointer; font-weight:500; font-size:0.75rem; white-space:nowrap;">
+          ✨ Thank you for supporting
+        </button>
+      `;
+    }
+  }
+
+  function filterSellerChannel(channel) {
+    const btnAll = document.getElementById('filter-btn-all');
+    const btnLog = document.getElementById('filter-btn-logistics');
+    const btnCust = document.getElementById('filter-btn-customers');
+    const logItem = document.getElementById('seller-logistics-channel-item');
+    const divider = document.getElementById('seller-buyers-divider');
+    const custItems = document.querySelectorAll('.seller-conv-item.channel-customer');
+
+    // Reset styles
+    [btnAll, btnLog, btnCust].forEach(b => {
+      if (b) {
+        b.style.background = '#f4f4f4';
+        b.style.color = 'var(--text-main)';
+        b.style.border = '1px solid var(--haat-border)';
+      }
+    });
+
+    if (channel === 'logistics') {
+      if (btnLog) {
+        btnLog.style.background = 'var(--haat-green)';
+        btnLog.style.color = '#fff';
+        btnLog.style.border = 'none';
+      }
+      if (logItem) logItem.style.display = 'flex';
+      if (divider) divider.style.display = 'none';
+      custItems.forEach(el => el.style.display = 'none');
+      selectSellerLogisticsConversation();
+    } else if (channel === 'customers') {
+      if (btnCust) {
+        btnCust.style.background = 'var(--haat-green)';
+        btnCust.style.color = '#fff';
+        btnCust.style.border = 'none';
+      }
+      if (logItem) logItem.style.display = 'none';
+      if (divider) divider.style.display = 'block';
+      custItems.forEach(el => el.style.display = 'flex');
+      if (activeCustomerId) {
+        const firstCust = document.querySelector('.seller-conv-item.channel-customer');
+        if (firstCust) firstCust.click();
+      }
+    } else {
+      if (btnAll) {
+        btnAll.style.background = 'var(--haat-green)';
+        btnAll.style.color = '#fff';
+        btnAll.style.border = 'none';
+      }
+      if (logItem) logItem.style.display = 'flex';
+      if (divider) divider.style.display = 'block';
+      custItems.forEach(el => el.style.display = 'flex');
+    }
+  }
+
+  function selectSellerLogisticsConversation(orderNum = '', productName = '') {
+    activeConversationType = 'logistics';
+    activeOrderNumber = orderNum || '';
+    activeProductName = productName || '';
+    lastSellerMsgCount = -1;
+
+    // Highlight logistics item
+    const logItem = document.getElementById('seller-logistics-channel-item');
+    if (logItem) {
+      logItem.classList.add('active');
+      logItem.style.background = '#f4f9f4';
+      logItem.style.borderLeft = '3px solid var(--haat-green)';
+      const unread = logItem.querySelector('.seller-log-unread-pill');
+      if (unread) unread.style.display = 'none';
+    }
+
+    // Remove highlight from customer items
+    document.querySelectorAll('.seller-conv-item.channel-customer').forEach(item => {
+      item.classList.remove('active');
+      item.style.background = 'transparent';
+      item.style.borderLeft = 'none';
+    });
+
+    // Update Header
+    document.getElementById('seller-chat-title').innerText = 'HAATEX Delivery Hub Desk';
+    document.getElementById('seller-chat-subtitle').innerHTML = '<i class="bi bi-shield-check text-green"></i> Official Logistics Operations Desk';
+    document.getElementById('seller-chat-avatar').innerHTML = '<i class="bi bi-truck"></i>';
+    const statusDot = document.getElementById('seller-chat-avatar-status');
+    if (statusDot) {
+      statusDot.style.background = '#2ecc71';
+      statusDot.title = 'Dispatch Desk Active';
+    }
+
+    const orderTag = document.getElementById('seller-chat-order-label');
+    if (orderTag) {
+      if (orderNum) {
+        orderTag.innerHTML = `<i class="bi bi-box-seam"></i> Order #${escapeHtml(orderNum)}`;
+        orderTag.style.display = 'inline-block';
+      } else {
+        orderTag.style.display = 'none';
+      }
+    }
+
+    // Update input placeholder & suggestions
+    const input = document.getElementById('seller-chat-input');
+    if (input) {
+      input.placeholder = orderNum 
+        ? `Message HAATEX Desk regarding Order #${orderNum}...` 
+        : 'Type message or pickup inquiry to HAATEX Logistics Desk...';
+    }
+    renderSellerQuickSuggestions();
+
+    loadSellerLogisticsMessages();
+  }
+
   function selectCustomerConversation(customerId, orderNum, productName, isOnline, customerName, customerPhone) {
+    activeConversationType = 'customer';
     activeCustomerId = customerId;
-    document.querySelectorAll('.seller-conv-item').forEach(item => {
+    activeOrderNumber = orderNum || '';
+    activeProductName = productName || '';
+    lastSellerMsgCount = -1;
+
+    // Remove highlight from logistics item
+    const logItem = document.getElementById('seller-logistics-channel-item');
+    if (logItem) {
+      logItem.classList.remove('active');
+      logItem.style.background = 'transparent';
+      logItem.style.borderLeft = 'none';
+    }
+
+    // Highlight selected customer item
+    document.querySelectorAll('.seller-conv-item.channel-customer').forEach(item => {
       const match = parseInt(item.getAttribute('data-customer-id')) === customerId;
       if (match) {
         item.classList.add('active');
@@ -1580,16 +1930,96 @@ require_once __DIR__ . '/../includes/header.php';
       statusDot.title = isOnline ? 'Active Now' : 'Offline';
     }
 
+    const input = document.getElementById('seller-chat-input');
+    if (input) {
+      input.placeholder = orderNum 
+        ? `Type message regarding Order #${orderNum} to buyer...` 
+        : 'Type a message to buyer...';
+    }
+    renderSellerQuickSuggestions();
+
     loadSellerMessages(customerId);
   }
 
   function setSellerQuickMsg(text) {
     const input = document.getElementById('seller-chat-input');
-    input.value = text;
-    input.focus();
+    if (input) {
+      input.value = text;
+      input.focus();
+    }
   }
 
-  function loadSellerMessages(customerId) {
+  function loadSellerLogisticsMessages(isPolling = false) {
+    const stream = document.getElementById('seller-chat-stream');
+    fetch(`<?= BASE_URL ?>api/messages.php?action=get_logistics_chat`)
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) return;
+
+        if (isPolling && data.messages.length === lastSellerMsgCount) {
+          return;
+        }
+        lastSellerMsgCount = data.messages.length;
+
+        if (data.messages.length === 0) {
+          stream.innerHTML = `
+            <div style="text-align:center; padding:50px 20px; color:var(--text-muted);">
+              <i class="bi bi-truck text-clay" style="font-size:2.6rem; display:block; margin-bottom:10px;"></i>
+              <strong style="color:var(--haat-green-dark); font-size:1.05rem; display:block;">HAATEX Logistics & Courier Desk</strong>
+              <p style="font-size:0.85rem; margin-top:4px; max-width:420px; margin-left:auto; margin-right:auto;">
+                Need to request package pickup from your workshop, check courier assignment, or coordinate delivery timing? Send a message to the HAATEX dispatch operator below.
+              </p>
+            </div>
+          `;
+          return;
+        }
+
+        let html = '';
+        data.messages.forEach(m => {
+          if (m.is_me) {
+            // Outgoing message to HAATEX Logistics
+            html += `
+              <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
+                <div style="max-width:72%;">
+                  <div style="background:var(--haat-green); color:#ffffff; padding:10px 16px; border-radius:18px 18px 4px 18px; font-size:0.9rem; line-height:1.45; box-shadow:0 2px 6px rgba(0,0,0,0.08);">
+                    ${escapeHtml(m.message)}
+                  </div>
+                  <div style="font-size:0.7rem; color:var(--text-muted); text-align:right; margin-top:3px; display:flex; justify-content:flex-end; align-items:center; gap:4px;">
+                    <span>${m.time}</span> • <span>${m.date}</span> <i class="bi bi-check2-all" style="color:var(--haat-green);"></i>
+                  </div>
+                </div>
+              </div>
+            `;
+          } else {
+            // Incoming message from HAATEX Logistics
+            html += `
+              <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:6px;">
+                <div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg, #1b3d22, #2d5a36); color:var(--haat-sand); display:flex; align-items:center; justify-content:center; font-size:1.1rem; flex-shrink:0;">
+                  <i class="bi bi-truck"></i>
+                </div>
+                <div style="max-width:72%;">
+                  <div style="font-size:0.72rem; font-weight:700; color:var(--haat-green-dark); margin-bottom:2px; margin-left:4px;">
+                    HAATEX Logistics Hub
+                  </div>
+                  <div style="background:#ffffff; color:var(--text-main); border:1px solid #d1e7dd; padding:10px 16px; border-radius:18px 18px 18px 4px; font-size:0.9rem; line-height:1.45; box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+                    ${escapeHtml(m.message)}
+                  </div>
+                  <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px; margin-left:4px;">
+                    <span>${m.time}</span> • <span>${m.date}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+        });
+
+        stream.innerHTML = html;
+        stream.scrollTop = stream.scrollHeight;
+      })
+      .catch(console.error);
+  }
+
+  function loadSellerMessages(customerId, isPolling = false) {
     if (!customerId) return;
     const stream = document.getElementById('seller-chat-stream');
     document.getElementById('seller-chat-customer-id').value = customerId;
@@ -1598,6 +2028,11 @@ require_once __DIR__ . '/../includes/header.php';
       .then(res => res.json())
       .then(data => {
         if (!data.success) return;
+
+        if (isPolling && data.messages.length === lastSellerMsgCount) {
+          return;
+        }
+        lastSellerMsgCount = data.messages.length;
 
         if (data.customer) {
           document.getElementById('seller-chat-title').innerText = data.customer.name;
@@ -1662,57 +2097,254 @@ require_once __DIR__ . '/../includes/header.php';
         stream.innerHTML = html;
         stream.scrollTop = stream.scrollHeight;
       })
-      .catch(err => console.error(err));
+      .catch(console.error);
   }
 
   function sendSellerMessage(e) {
     e.preventDefault();
     const input = document.getElementById('seller-chat-input');
     const msg = input.value.trim();
-    if (!msg || !activeCustomerId) return;
+    if (!msg) return;
 
-    const fd = new FormData();
-    fd.append('action', 'send');
-    fd.append('customer_id', activeCustomerId);
-    fd.append('message', msg);
-
-    input.value = '';
     const sendBtn = document.getElementById('seller-chat-send-btn');
     sendBtn.disabled = true;
 
-    fetch('<?= BASE_URL ?>api/messages.php', {
-      method: 'POST',
-      body: fd
-    })
-      .then(res => res.json())
-      .then(data => {
-        sendBtn.disabled = false;
-        if (data.success) {
-          loadSellerMessages(activeCustomerId);
-        }
+    if (activeConversationType === 'logistics') {
+      const fd = new FormData();
+      fd.append('action', 'send_logistics_chat');
+      fd.append('message', msg);
+      if (activeOrderNumber) {
+        fd.append('order_number', activeOrderNumber);
+      }
+
+      input.value = '';
+
+      fetch('<?= BASE_URL ?>api/messages.php', {
+        method: 'POST',
+        body: fd
       })
-      .catch(err => {
+        .then(res => res.json())
+        .then(data => {
+          sendBtn.disabled = false;
+          if (data.success) {
+            lastSellerMsgCount = -1;
+            loadSellerLogisticsMessages();
+            pollSellerConversations();
+          } else {
+            alert(data.error || 'Failed to send message to HAATEX Logistics');
+          }
+        })
+        .catch(err => {
+          sendBtn.disabled = false;
+          console.error(err);
+        });
+    } else {
+      if (!activeCustomerId) {
         sendBtn.disabled = false;
-        console.error(err);
-      });
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('action', 'send');
+      fd.append('customer_id', activeCustomerId);
+      if (activeOrderNumber) {
+        fd.append('order_number', activeOrderNumber);
+      }
+      fd.append('message', msg);
+
+      input.value = '';
+
+      fetch('<?= BASE_URL ?>api/messages.php', {
+        method: 'POST',
+        body: fd
+      })
+        .then(res => res.json())
+        .then(data => {
+          sendBtn.disabled = false;
+          if (data.success) {
+            lastSellerMsgCount = -1;
+            loadSellerMessages(activeCustomerId);
+            pollSellerConversations();
+          }
+        })
+        .catch(err => {
+          sendBtn.disabled = false;
+          console.error(err);
+        });
+    }
   }
 
   function openChatWithCustomer(customerId, orderNum, productName) {
     switchSellerTab('messages');
     selectCustomerConversation(customerId, orderNum, productName, 0, '', '');
-    if (orderNum) {
-      document.getElementById('seller-chat-input').placeholder = `Type message regarding Order #${orderNum}...`;
-    }
+  }
+
+  function openChatWithLogistics(orderNum = '', productName = '') {
+    switchSellerTab('messages');
+    selectSellerLogisticsConversation(orderNum, productName);
+  }
+
+  function pollSellerConversations() {
+    fetch('<?= BASE_URL ?>api/messages.php?action=seller_conversations')
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) return;
+
+        // 1. Update navigation unread badge
+        const navBadge = document.getElementById('seller-nav-msg-badge');
+        if (navBadge) {
+          if (data.unread_total > 0) {
+            navBadge.innerText = data.unread_total;
+            navBadge.style.display = '';
+          } else {
+            navBadge.style.display = 'none';
+          }
+        }
+
+        // 2. Update overview metrics
+        const ovBadge = document.getElementById('seller-overview-msg-badge');
+        if (ovBadge) {
+          if (data.unread_total > 0) {
+            ovBadge.innerText = data.unread_total + ' New';
+            ovBadge.style.display = '';
+          } else {
+            ovBadge.style.display = 'none';
+          }
+        }
+        const ovCount = document.getElementById('seller-overview-chat-count');
+        if (ovCount && data.conversations) {
+          ovCount.innerText = (data.conversations.length + 1) + ' Channels';
+        }
+
+        // 3. Update Pinned HAATEX Logistics Channel
+        if (data.logistics) {
+          const logItem = document.getElementById('seller-logistics-channel-item');
+          if (logItem) {
+            const previewEl = logItem.querySelector('.seller-log-preview');
+            if (previewEl && data.logistics.last_message) {
+              previewEl.innerText = data.logistics.last_message;
+            }
+            const timeEl = logItem.querySelector('.seller-log-time');
+            if (timeEl && data.logistics.last_message_time) {
+              timeEl.innerText = data.logistics.last_message_time;
+            }
+            const unreadPill = logItem.querySelector('.seller-log-unread-pill');
+            if (unreadPill) {
+              if (activeConversationType === 'logistics') {
+                unreadPill.style.display = 'none';
+              } else if (data.logistics.unread_count > 0) {
+                unreadPill.innerText = data.logistics.unread_count;
+                unreadPill.style.display = 'inline-block';
+              } else {
+                unreadPill.style.display = 'none';
+              }
+            }
+          }
+        }
+
+        // 4. Update customer conversation list items
+        const convList = document.getElementById('seller-conv-list');
+        if (convList && data.conversations && data.conversations.length > 0) {
+          const emptyNotice = document.getElementById('seller-empty-cust-notice');
+          if (emptyNotice) emptyNotice.remove();
+
+          data.conversations.forEach((conv) => {
+            let item = convList.querySelector(`.seller-conv-item[data-customer-id="${conv.customer_id}"]`);
+            if (item) {
+              const previewEl = item.querySelector('.seller-conv-preview');
+              if (previewEl && conv.last_message) previewEl.innerText = conv.last_message;
+
+              const timeEl = item.querySelector('.seller-conv-time');
+              if (timeEl && conv.last_message_time) timeEl.innerText = conv.last_message_time;
+
+              const dotEl = item.querySelector('.seller-conv-dot');
+              if (dotEl) {
+                dotEl.style.background = conv.is_online ? '#2ecc71' : '#cbd5e1';
+                dotEl.title = conv.is_online ? 'Active Now' : 'Offline';
+              }
+
+              let unreadPill = item.querySelector('.conv-unread-pill');
+              if (activeConversationType === 'customer' && conv.customer_id === activeCustomerId) {
+                if (unreadPill) unreadPill.remove();
+              } else if (conv.unread_count > 0) {
+                if (!unreadPill) {
+                  const previewContainer = previewEl ? previewEl.parentElement : null;
+                  if (previewContainer) {
+                    unreadPill = document.createElement('span');
+                    unreadPill.className = 'conv-unread-pill';
+                    unreadPill.style = 'font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px;';
+                    previewContainer.appendChild(unreadPill);
+                  }
+                }
+                if (unreadPill) unreadPill.innerText = conv.unread_count;
+              } else if (unreadPill) {
+                unreadPill.remove();
+              }
+            } else {
+              const newItem = document.createElement('div');
+              newItem.className = 'seller-conv-item channel-customer';
+              newItem.setAttribute('data-customer-id', conv.customer_id);
+              newItem.setAttribute('data-order-num', conv.order_number || '');
+              newItem.setAttribute('data-product-name', conv.product_name || '');
+              newItem.setAttribute('data-customer-name', conv.customer_name);
+              newItem.setAttribute('data-customer-phone', conv.customer_phone || '');
+              newItem.setAttribute('data-is-online', conv.is_online ? '1' : '0');
+              newItem.style = 'padding:12px 14px; border-bottom:1px solid #f0ebe4; cursor:pointer; display:flex; gap:12px; align-items:center; transition:background 0.2s; position:relative; background:transparent;';
+              newItem.onclick = function() {
+                selectCustomerConversation(conv.customer_id, conv.order_number || '', conv.product_name || '', conv.is_online ? 1 : 0, conv.customer_name, conv.customer_phone || '');
+              };
+
+              newItem.innerHTML = `
+                <div style="position:relative; flex-shrink:0;">
+                  <div style="width:44px; height:44px; border-radius:50%; background:linear-gradient(135deg, #f7efe6, #ebd9c8); color:var(--haat-clay); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:1.05rem; border:1px solid #e2d5c5;">
+                    ${escapeHtml(conv.customer_name.charAt(0).toUpperCase())}
+                  </div>
+                  <span class="seller-conv-dot" style="position:absolute; bottom:0; right:0; width:11px; height:11px; background:${conv.is_online ? '#2ecc71' : '#cbd5e1'}; border-radius:50%; border:2px solid #fff;" title="${conv.is_online ? 'Active Now' : 'Offline'}"></span>
+                </div>
+                <div style="flex:1; min-width:0;">
+                  <div style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                    <strong style="font-size:0.88rem; color:var(--haat-green-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block;">
+                      ${escapeHtml(conv.customer_name)}
+                    </strong>
+                    ${conv.last_message_time ? `<span class="seller-conv-time" style="font-size:0.68rem; color:var(--text-muted); flex-shrink:0;">${escapeHtml(conv.last_message_time)}</span>` : ''}
+                  </div>
+                  ${conv.order_number ? `
+                    <div style="font-size:0.73rem; color:var(--haat-clay); font-weight:600; display:flex; align-items:center; gap:4px; margin:2px 0;">
+                      <i class="bi bi-bag-check" style="font-size:0.72rem;"></i>
+                      <span>#${escapeHtml(conv.order_number)}</span>
+                      ${conv.product_name ? `<span style="color:var(--text-muted); font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px;">• ${escapeHtml(conv.product_name)}</span>` : ''}
+                    </div>
+                  ` : ''}
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                    <div class="seller-conv-preview" style="font-size:0.74rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;">
+                      ${escapeHtml(conv.last_message || 'Click to chat...')}
+                    </div>
+                    ${conv.unread_count > 0 ? `<span class="conv-unread-pill" style="font-size:0.65rem; background:var(--haat-clay); color:#fff; font-weight:700; padding:1px 6px; border-radius:10px;">${conv.unread_count}</span>` : ''}
+                  </div>
+                </div>
+              `;
+              convList.appendChild(newItem);
+            }
+          });
+        }
+
+        // 5. If messages panel is active, refresh active chat stream
+        const msgPanel = document.getElementById('panel-messages');
+        if (msgPanel && msgPanel.style.display !== 'none') {
+          if (activeConversationType === 'logistics') {
+            loadSellerLogisticsMessages(true);
+          } else if (activeCustomerId) {
+            loadSellerMessages(activeCustomerId, true);
+          }
+        }
+      })
+      .catch(console.error);
   }
 
   function startSellerChatPolling() {
     stopSellerChatPolling();
-    sellerChatPollTimer = setInterval(() => {
-      const messagesPanel = document.getElementById('panel-messages');
-      if (messagesPanel && messagesPanel.style.display !== 'none' && activeCustomerId) {
-        loadSellerMessages(activeCustomerId);
-      }
-    }, 3500);
+    pollSellerConversations();
+    sellerChatPollTimer = setInterval(pollSellerConversations, 3500);
   }
 
   function stopSellerChatPolling() {
@@ -1847,16 +2479,16 @@ require_once __DIR__ . '/../includes/header.php';
     }
 
     // Toggle Notifications Dropdown
-    const notifBtn = document.getElementById('seller-notif-btn');
-    const notifDropdown = document.getElementById('seller-notif-dropdown');
-    if (notifBtn && notifDropdown) {
-      notifBtn.addEventListener('click', (e) => {
+    const sellerNotifBtn = document.getElementById('seller-notif-btn');
+    const sellerNotifDropdown = document.getElementById('seller-notif-dropdown');
+    if (sellerNotifBtn && sellerNotifDropdown) {
+      sellerNotifBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        notifDropdown.style.display = (notifDropdown.style.display === 'none' || !notifDropdown.style.display) ? 'block' : 'none';
+        sellerNotifDropdown.style.display = (sellerNotifDropdown.style.display === 'none' || !sellerNotifDropdown.style.display) ? 'block' : 'none';
       });
       document.addEventListener('click', (e) => {
-        if (!notifBtn.contains(e.target) && !notifDropdown.contains(e.target)) {
-          notifDropdown.style.display = 'none';
+        if (!sellerNotifBtn.contains(e.target) && !sellerNotifDropdown.contains(e.target)) {
+          sellerNotifDropdown.style.display = 'none';
         }
       });
     }

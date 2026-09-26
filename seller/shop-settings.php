@@ -19,12 +19,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action_shop_settings'
         $up = $db->prepare("UPDATE `sellers` SET 
             `shop_name` = ?, `phone` = ?, `address` = ?, `district` = ?, 
             `division` = ?, `bkash_number` = ?, `bank_name` = ?, 
-            `bank_account_no` = ?, `description` = ? 
+            `bank_account_no` = ?, `description` = ?, `allow_self_purchase` = ? 
             WHERE `id` = ?");
         $up->execute([
             $shopName, $phone, $address, $district, 
             $division, $bkashNumber, $bankName, 
-            $bankAcc, $desc, $seller['id']
+            $bankAcc, $desc, isset($_POST['allow_self_purchase']) ? 1 : 0, $seller['id']
         ]);
         setFlash('success', 'Workshop profile and payout details updated successfully.');
     }

@@ -1,0 +1,212 @@
+<?php
+// =========================================================
+// HAAT! API — Seller Orders
+// GET /api/seller_orders.php               list seller's sub-orders
+// GET /api/seller_orders.php?id=:id        single seller order detail
+// GET /api/seller_orders.php?action=all    admin: all seller orders
+// PUT /api/seller_orders.php?id=:id        update status / assign rider
+// =========================================================
+
+require_once __DIR__ . '/helpers.php';
+boot();
+
+$db     = getDB();
+$method = $_SERVER['REQUEST_METHOD'];
+$user   = auth_required();
+$id     = (int) query('id', 0);
+$action = query('action', '');
+
+// ─────────────────────────────────────────────────────────
+// GET
+// ─────────────────────────────────────────────────────────
+if ($method === 'GET') {
+
+    // Admin: all seller orders
+    if ($action === 'all') {
+        role_required('admin');
+        $p      = paginate(20);
+        $status = query('status', '');
+        $where  = $status ? 'WHERE so.status = ?' : '';
+        $params = $status ? [$status] : [];
+
+        $stmt = $db->prepare(
+            "SELECT so.id, so.seller_order_number, so.status,
+                    so.subtotal, so.seller_total, so.created_at,
+                    s.store_name, o.order_number,
+                    r.id AS rider_id, ru.name AS rider_name
+             FROM seller_orders so
+             JOIN stores s  ON s.id  = so.store_id
+             JOIN orders o  ON o.id  = so.order_id
+             LEFT JOIN riders r  ON r.id  = so.assigned_rider_id
+             LEFT JOIN users ru  ON ru.id = r.user_id
+             $where
+             ORDER BY so.created_at DESC
+             LIMIT {$p['limit']} OFFSET {$p['offset']}"
+        );
+        $stmt->execute($params);
+        json_ok(['seller_orders' => $stmt->fetchAll(), 'page' => $p['page']]);
+    }
+
+    // Single seller order
+    if ($id) {
+        $stmt = $db->prepare(
+            "SELECT so.*, s.store_name, o.order_number,
+                    o.shipping_name, o.shipping_phone, o.shipping_address,
+                    o.district, o.division, o.postal_code,
+                    r.id AS rider_id, ru.name AS rider_name
+             FROM seller_orders so
+             JOIN stores s ON s.id = so.store_id
+             JOIN orders o ON o.id = so.order_id
+             LEFT JOIN riders r  ON r.id  = so.assigned_rider_id
+             LEFT JOIN users ru  ON ru.id = r.user_id
+             WHERE so.id = ?"
+        );
+        $stmt->execute([$id]);
+        $so = $stmt->fetch();
+        if (!$so) json_error('Seller order not found', 404);
+
+        // Access control
+        if ($user['role'] === 'seller' && (int) $so['store_id'] !== $user['store_id']) {
+            json_error('Forbidden', 403);
+        }
+
+        // Items
+        $iStmt = $db->prepare('SELECT * FROM order_items WHERE seller_order_id = ?');
+        $iStmt->execute([$id]);
+        $items = $iStmt->fetchAll();
+        foreach ($items as &$it) {
+            $it['image_url'] = "/HAAT!/api/images.php?type=product&id={$it['product_id']}&n=1";
+        }
+        $so['items'] = $items;
+
+        // Tracking
+        $tStmt = $db->prepare(
+            'SELECT dt.status, dt.location, dt.note, dt.created_at, u.name AS updated_by_name
+             FROM delivery_tracking dt
+             LEFT JOIN users u ON u.id = dt.updated_by
+             WHERE dt.seller_order_id = ?
+             ORDER BY dt.created_at ASC'
+        );
+        $tStmt->execute([$id]);
+        $so['tracking'] = $tStmt->fetchAll();
+
+        json_ok($so);
+    }
+
+    // Seller: list own seller orders
+    role_required(['seller', 'logistics']);
+    $p      = paginate(15);
+    $status = query('status', '');
+
+    if ($user['role'] === 'seller') {
+        $sid   = $user['store_id'];
+        if (!$sid) json_error('No store found', 404);
+        $where  = $status ? 'AND so.status = ?' : '';
+        $params = $status ? [$sid, $status] : [$sid];
+
+        $stmt = $db->prepare(
+            "SELECT so.id, so.seller_order_number, so.status,
+                    so.subtotal, so.seller_total, so.created_at,
+                    o.order_number, o.shipping_name, o.district
+             FROM seller_orders so
+             JOIN orders o ON o.id = so.order_id
+             WHERE so.store_id = ? $where
+             ORDER BY so.created_at DESC
+             LIMIT {$p['limit']} OFFSET {$p['offset']}"
+        );
+        $stmt->execute($params);
+    } else {
+        // Logistics: orders assigned to them
+        $riderStmt = $db->prepare('SELECT id FROM riders WHERE user_id = ?');
+        $riderStmt->execute([$user['id']]);
+        $rider = $riderStmt->fetch();
+        if (!$rider) json_error('Rider profile not found', 404);
+
+        $stmt = $db->prepare(
+            "SELECT so.id, so.seller_order_number, so.status,
+                    so.seller_total, so.created_at,
+                    o.order_number, o.shipping_name, o.district, o.division,
+                    s.store_name
+             FROM seller_orders so
+             JOIN orders o ON o.id = so.order_id
+             JOIN stores s ON s.id = so.store_id
+             WHERE so.assigned_rider_id = ?
+             ORDER BY so.created_at DESC
+             LIMIT {$p['limit']} OFFSET {$p['offset']}"
+        );
+        $stmt->execute([$rider['id']]);
+    }
+
+    json_ok(['seller_orders' => $stmt->fetchAll(), 'page' => $p['page']]);
+}
+
+// ─────────────────────────────────────────────────────────
+// PUT — update status / assign rider
+// ─────────────────────────────────────────────────────────
+if ($method === 'PUT') {
+    if (!$id) json_error('id required', 422);
+    $data = get_body();
+
+    $chk = $db->prepare('SELECT so.*, s.user_id AS seller_user_id FROM seller_orders so JOIN stores s ON s.id = so.store_id WHERE so.id = ?');
+    $chk->execute([$id]);
+    $so = $chk->fetch();
+    if (!$so) json_error('Seller order not found', 404);
+
+    // Seller can only update their own
+    if ($user['role'] === 'seller' && (int) $so['seller_user_id'] !== $user['id']) {
+        json_error('Forbidden', 403);
+    } elseif (!in_array($user['role'], ['seller','admin','logistics'])) {
+        json_error('Forbidden', 403);
+    }
+
+    $fields = [];
+    $params = [];
+
+    if (isset($data['status'])) {
+        $fields[] = 'status = ?';
+        $params[] = $data['status'];
+    }
+    if (isset($data['assigned_rider_id']) && $user['role'] !== 'seller') {
+        $fields[] = 'assigned_rider_id = ?';
+        $params[] = (int) $data['assigned_rider_id'];
+    }
+    if (!$fields) json_error('Nothing to update', 422);
+
+    $params[] = $id;
+    $db->prepare('UPDATE seller_orders SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+
+    // Auto-insert delivery tracking on status change
+    if (isset($data['status'])) {
+        $db->prepare(
+            'INSERT INTO delivery_tracking (seller_order_id, rider_id, status, note, updated_by)
+             VALUES (?, ?, ?, ?, ?)'
+        )->execute([
+            $id,
+            $so['assigned_rider_id'] ?? null,
+            $data['status'],
+            $data['note'] ?? null,
+            $user['id'],
+        ]);
+
+        // Notify customer
+        $cusStmt = $db->prepare('SELECT o.user_id FROM orders o JOIN seller_orders so ON so.order_id = o.id WHERE so.id = ?');
+        $cusStmt->execute([$id]);
+        $cusRow = $cusStmt->fetch();
+        if ($cusRow) {
+            $db->prepare(
+                'INSERT INTO notifications (user_id, order_id, title, message, type)
+                 VALUES (?, ?, ?, ?, ?)'
+            )->execute([
+                $cusRow['user_id'],
+                $so['order_id'],
+                'Order Status Updated',
+                "Your order #{$so['seller_order_number']} is now: " . strtoupper($data['status']),
+                'order_status',
+            ]);
+        }
+    }
+
+    json_ok(['message' => 'Seller order updated']);
+}
+
+json_error('Method not allowed', 405);

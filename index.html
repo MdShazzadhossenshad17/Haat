@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HAAT — Global • Regional • Artisanal (Multi-Vendor Marketplace & HATEX Logistics)</title>
+  <meta name="description" content="HAAT is Bangladesh's all-variety digital marketplace inspired by the traditional village bazaar. Everything from electronics and fashion to groceries and crafts, delivered nationwide by HATEX.">
+  <link rel="icon" type="image/jpeg" href="logo.jpg">
+
+  <!-- Fonts: Outfit for titles, Figtree & Hind Siliguri for body and Bengali support -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  
+  <!-- Core Design System -->
+  <link rel="stylesheet" href="style.css?v=2.6">
+</head>
+<body>
+
+  <!-- =========================================================================
+       1. Main Header (Clean, Modern, Logo, Search, Profile with 3 Items & Cart)
+       ========================================================================= -->
+  <header class="site-header">
+    <div class="container header-flex">
+      <!-- HAAT Brand Logo -->
+      <a href="#/" class="logo-link" id="headerLogoLink" onclick="return window.handleLogoClick(event);" title="HAAT">
+        <img src="logo.jpg" alt="HAAT" class="brand-logo-img" onerror="this.style.display='none'; document.getElementById('logoFallback').style.display='flex'">
+        <div id="logoFallback" class="logo-fallback" style="display:none;">
+          <img src="logo.svg" alt="HAAT Logo" class="brand-logo-img" style="height:44px; width:auto;">
+          <div class="logo-text">
+            <span class="logo-title">HAAT</span>
+            <span class="logo-sub">GLOBAL • REGIONAL • ARTISANAL</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- Clean Search Bar -->
+      <div class="search-container" id="headerSearchContainer">
+        <form class="search-box" onsubmit="event.preventDefault(); handleSearch(this.q.value);">
+          <input type="search" name="q" id="searchInput" placeholder="Search in HAAT (e.g. Smartwatch, T-shirt, Rice, Honey, Clay Teapot, Jamdani...)" aria-label="Search Marketplace">
+          <button type="submit" class="search-btn" aria-label="Search">
+            <i class="bi bi-search"></i>
+          </button>
+        </form>
+      </div>
+
+      <!-- Header Right: User Account Profile, Notifications, Wishlist, Cart -->
+      <div class="header-actions">
+        <!-- Account Dropdown Wrap -->
+        <div class="account-dropdown-wrap" id="accountDropdownWrap">
+          <button type="button" class="account-pill-btn" onclick="toggleAccountMenu()" aria-label="User Account Menu" id="accountPillBtn">
+            <div class="user-avatar" id="headerAvatar"><i class="bi bi-person"></i></div>
+            <div class="user-info">
+              <span class="user-role-label" id="headerAccountRole">Welcome</span>
+              <strong class="user-name" id="headerAccountName">Log In / Sign Up</strong>
+            </div>
+            <i class="bi bi-chevron-down caret-icon"></i>
+          </button>
+
+          <!-- Interactive Account Menu Flyout -->
+          <div class="account-menu-flyout hidden" id="accountMenuFlyout">
+            <div class="profile-dropdown-items" id="profileDropdownItems">
+              <!-- Rendered dynamically based on Logged In / Guest session -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Notifications Dropdown (Beside Profile Icon) -->
+        <div class="notification-dropdown-wrap" id="notificationDropdownWrap">
+          <button type="button" class="action-icon-link notification-btn" onclick="window.toggleNotificationMenu()" aria-label="Notifications" id="notificationBtn" title="Notifications">
+            <i class="bi bi-bell"></i>
+            <span class="count-badge" id="notificationCount">0</span>
+          </button>
+
+          <!-- Interactive Notifications Flyout -->
+          <div class="notification-flyout hidden" id="notificationFlyout">
+            <div class="notification-flyout-head">
+              <strong>Notifications (<span id="unreadNotifCount">0</span>)</strong>
+              <button type="button" class="notif-mark-btn" onclick="window.markAllNotificationsRead()">Mark all read</button>
+            </div>
+            <div class="notification-flyout-list" id="notificationFlyoutList">
+              <!-- Rendered dynamically based on state.notifications -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Wishlist -->
+        <a href="#/wishlist" class="action-icon-link" id="headerWishlistLink" title="Wishlist">
+          <i class="bi bi-heart"></i>
+          <span class="count-badge" id="wishlistCount">0</span>
+        </a>
+
+        <!-- Cart -->
+        <a href="#/cart" class="action-cart-btn" id="headerCartLink" title="Shopping Cart">
+          <div class="cart-icon-box">
+            <i class="bi bi-cart3"></i>
+            <span class="count-badge" id="cartCount">0</span>
+          </div>
+          <span class="cart-btn-txt">Cart</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- =========================================================================
+       2. Dynamic Application Mount Point (SPA)
+       ========================================================================= -->
+  <main id="app" tabindex="-1">
+    <div class="page-loader">
+      <div class="spinner"></div>
+      <p>Loading HAAT Digital Market…</p>
+    </div>
+  </main>
+
+  <!-- =========================================================================
+       3. Global Modals, Toast & Overlays
+       ========================================================================= -->
+  <div id="globalModal" class="modal-backdrop hidden" onclick="if(event.target === this) closeModal()">
+    <div class="modal-dialog" role="dialog" aria-modal="true" id="modalDialog">
+      <button class="modal-close-btn" onclick="closeModal()" aria-label="Close modal">&times;</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- =========================================================================
+       4. Comprehensive Footer
+       ========================================================================= -->
+  <footer class="site-footer" id="siteFooter">
+    <!-- Value Props Strip -->
+    <div class="footer-props-bar" id="footerPropsBar">
+      <div class="container props-grid">
+        <div class="prop-box">
+          <i class="bi bi-shop prop-ico"></i>
+          <div>
+            <strong>All-Variety Digital Haat</strong>
+            <p>Everything from fresh village harvests and daily essentials to electronics and lifestyle.</p>
+          </div>
+        </div>
+        <div class="prop-box">
+          <i class="bi bi-truck prop-ico"></i>
+          <div>
+            <strong>HATEX Dedicated Delivery</strong>
+            <p>Fast nationwide home delivery with live event milestone tracking.</p>
+          </div>
+        </div>
+        <div class="prop-box">
+          <i class="bi bi-palette prop-ico"></i>
+          <div>
+            <strong>Merchant Store Builder</strong>
+            <p>Independent seller storefronts with customizable themes, sections & variant stock.</p>
+          </div>
+        </div>
+        <div class="prop-box">
+          <i class="bi bi-shield-check prop-ico"></i>
+          <div>
+            <strong>HAAT Escrow Protection</strong>
+            <p>Safe payments via bKash, Nagad, Card and Cash on Delivery.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Footer Columns -->
+    <div class="container footer-columns-grid" id="footerMainColumns">
+      <div class="footer-col brand-col">
+        <img src="logo.jpg" alt="HAAT Logo" class="footer-brand-img">
+        <p class="footer-desc">
+          <strong>HAAT (হাট)</strong> applies the timeless tradition of Bengal's bustling village haat to the modern digital world. A full-variety multi-vendor marketplace, independent seller storefront studio, and dedicated logistics network (HATEX).
+        </p>
+      </div>
+
+      <div class="footer-col">
+        <h4>Customer Care</h4>
+        <ul>
+          <li><a href="javascript:void(0)" onclick="openHelpModal()">Help Center & Support</a></li>
+          <li><a href="#/tracking">HATEX Live Event Tracking</a></li>
+          <li><a href="#/cart">Multi-Vendor Cart</a></li>
+          <li><a href="#/auth">Customer Login & Register</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Seller Store Studio</h4>
+        <ul>
+          <li><a href="#/auth">Register as a Seller</a></li>
+          <li><a href="#/stores">Browse Merchant Stores</a></li>
+          <li><a href="#/dash/seller">Storefront Theme Studio</a></li>
+          <li><a href="#/dash/seller">Variant & Stock Manager</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>HATEX Logistics & Riders</h4>
+        <ul>
+          <li><a href="#/auth">Rider Portal & Registration</a></li>
+          <li><a href="#/dash/hatex">HATEX Dispatch Hub</a></li>
+          <li><a href="#/dash/rider">Rider Delivery Queue</a></li>
+          <li><a href="javascript:void(0)" onclick="openHelpModal()">Support & Help Desk</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Payment & Trust</h4>
+        <div class="payment-badges-wrap">
+          <span class="pay-badge bkash">bKash</span>
+          <span class="pay-badge nagad">Nagad</span>
+          <span class="pay-badge cod">Cash on Delivery</span>
+          <span class="pay-badge card">Visa / Mastercard</span>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">
+          <i class="bi bi-shield-lock-fill text-success"></i> 256-Bit SSL Secured Escrow
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Copyright -->
+    <div class="footer-bottom-bar">
+      <div class="container footer-bottom-flex">
+        <div>&copy; 2026 <strong>HAAT</strong> (হাট) — Global • Regional • Artisanal. All rights reserved.</div>
+        <div>The Digital Village Market of Bangladesh. Delivered by <strong>HATEX Express</strong>.</div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Floating Circular Report Button (Bottom Right) -->
+  <button type="button" class="floating-admin-chat-btn" id="floatingReportBtn" onclick="window.openAdminReportModal()" title="Submit Report to Admin" aria-label="Submit Report">
+    <i class="bi bi-flag-fill"></i>
+    <span class="chat-btn-pulse"></span>
+  </button>
+
+  <!-- Application Logic -->
+  <script src="app.js?v=2.6"></script>
+  <!-- API Bridge: syncs app.js ↔ PHP API ↔ MySQL (no changes to app.js) -->
+  <script src="api-bridge.js?v=2.1"></script>
+</body>
+</html>

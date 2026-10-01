@@ -1,0 +1,17 @@
+# HAAT! API — Apache config for /api/ directory
+
+# Disable directory listing
+Options -Indexes
+
+# Security: hide PHP errors from responses (handle in code)
+php_flag display_errors Off
+
+# Allow CORS preflight from any origin (dev mode)
+Header always set Access-Control-Allow-Origin "*"
+Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+Header always set Access-Control-Allow-Headers "Content-Type, X-Requested-With"
+
+# Allow large file uploads (for product images)
+php_value upload_max_filesize 10M
+php_value post_max_size 12M
+php_value max_execution_time 60

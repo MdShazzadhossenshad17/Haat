@@ -1237,7 +1237,7 @@
     reviews: readStorage('reviews', defaultReviews),
     messages: readStorage('messages', defaultMessages),
     notifications: readStorage('notifications', defaultNotifications),
-    collectedCoupons: readStorage('collectedCoupons', []),
+    collectedCouponsByUser: readStorage('collectedCouponsByUser', {}),
     greetedChannels: readStorage('greetedChannels', ['seller_1_order_1']),
 
     // Active session (null = Guest / Logged out)
@@ -1413,6 +1413,7 @@
     writeStorage('reviews', state.reviews);
     writeStorage('messages', state.messages);
     writeStorage('notifications', state.notifications);
+    writeStorage('collectedCouponsByUser', state.collectedCouponsByUser);
     writeStorage('collectedCoupons', state.collectedCoupons);
     writeStorage('greetedChannels', state.greetedChannels);
     writeStorage('appliedCoupon', state.appliedCoupon);
@@ -1468,6 +1469,47 @@
     }
   }
   resolveCurrentUser();
+
+  // Individual account coupons isolation (every account is individual)
+  if (!state.collectedCouponsByUser || typeof state.collectedCouponsByUser !== 'object' || Array.isArray(state.collectedCouponsByUser)) {
+    state.collectedCouponsByUser = {};
+  }
+  const legacyFlatCoupons = readStorage('collectedCoupons', null);
+  if (Array.isArray(legacyFlatCoupons) && legacyFlatCoupons.length > 0 && Object.keys(state.collectedCouponsByUser).length === 0) {
+    state.collectedCouponsByUser['1'] = legacyFlatCoupons;
+  }
+
+  function getCurrentUserCollectedCouponIds() {
+    if (!state.currentUser || state.activeRole !== 'customer') return [];
+    const uid = String(state.currentUser.id);
+    if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
+    if (!Array.isArray(state.collectedCouponsByUser[uid])) {
+      state.collectedCouponsByUser[uid] = [];
+    }
+    return state.collectedCouponsByUser[uid];
+  }
+  window.getCurrentUserCollectedCouponIds = getCurrentUserCollectedCouponIds;
+
+  function isCouponCollectedByCurrentUser(couponId) {
+    if (!state.currentUser || state.activeRole !== 'customer') return false;
+    return getCurrentUserCollectedCouponIds().includes(Number(couponId));
+  }
+  window.isCouponCollectedByCurrentUser = isCouponCollectedByCurrentUser;
+
+  // Dynamically proxy state.collectedCoupons to the currently active customer account
+  Object.defineProperty(state, 'collectedCoupons', {
+    get() {
+      return getCurrentUserCollectedCouponIds();
+    },
+    set(val) {
+      if (!state.currentUser || state.activeRole !== 'customer') return;
+      const uid = String(state.currentUser.id);
+      if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
+      state.collectedCouponsByUser[uid] = Array.isArray(val) ? val : [];
+    },
+    configurable: true,
+    enumerable: true
+  });
 
   function showToast(message, type = 'info') {
     const t = $('#toast');
@@ -2582,6 +2624,7 @@
     state.activeRole = null;
     state.currentUser = null;
     state.currentUserId = null;
+    state.appliedCoupon = null;
     writeStorage('currentUserId', null);
     try {
       localStorage.removeItem('HAAT_API_USER_ID');
@@ -2595,6 +2638,7 @@
 
   window.instantDemoLogin = function (role) {
     state.activeRole = role;
+    state.appliedCoupon = null;
     if (role === 'customer') {
       const u = state.users.find(x => x.id === 1 || x.email === 'customer@haat.com.bd') || state.users.find(x => x.role === 'customer');
       state.currentUserId = u ? u.id : 1;
@@ -2674,6 +2718,7 @@
     state.currentUserId = user.id;
     state.currentUser = user;
     state.lastAuthEmail = user.email;
+    state.appliedCoupon = null;
     persist();
     showToast(`Welcome back, ${user.name}!`, 'success');
 
@@ -2769,6 +2814,9 @@
       state.activeRole = 'customer';
       state.currentUserId = newUser.id;
       state.currentUser = newUser;
+      state.appliedCoupon = null;
+      if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
+      state.collectedCouponsByUser[String(newUser.id)] = [];
       persist();
       showToast(`Welcome to HAAT, ${name}! Your account has been registered.`, 'success');
       location.hash = '#/account';
@@ -3159,7 +3207,7 @@
       location.hash = '#/auth';
       return;
     }
-    if (state.activeRole !== 'customer') {
+    if (state.activeRole !== 'customer' || !state.currentUser) {
       showToast('Sellers and staff can view vouchers but cannot collect or occupy them.', 'warning');
       return;
     }
@@ -3167,18 +3215,21 @@
     const c = state.coupons.find((x) => x.id === idNum);
     if (!c) return;
 
-    if (!state.collectedCoupons.includes(idNum)) {
-      state.collectedCoupons.push(idNum);
+    const userCoupons = getCurrentUserCollectedCouponIds();
+    if (!userCoupons.includes(idNum)) {
+      userCoupons.push(idNum);
       window.addNotification({
         title: `Voucher Collected (${c.code})`,
-        message: `You collected ${c.discount_type === 'percentage' ? c.discount_value + '% OFF' : money(c.discount_value) + ' OFF'}. Applied automatically at Cart & Checkout!`,
+        message: `You collected ${c.discount_type === 'percentage' || c.discount_type === 'percent' ? c.discount_value + '% OFF' : money(c.discount_value) + ' OFF'}. Applied automatically at Cart & Checkout!`,
         type: 'promo',
         target_role: 'customer',
         link: '#/cart'
       });
       persist();
-      showToast(`Voucher "${c.code}" collected! Ready to use in Cart & Checkout.`, 'success');
+      showToast(`Voucher "${c.code}" collected for ${esc(state.currentUser.name)}! Ready in Cart & Checkout.`, 'success');
       render();
+    } else {
+      showToast(`Voucher "${c.code}" is already in your account wallet!`, 'info');
     }
   };
 
@@ -6021,6 +6072,7 @@
     const myOrders = (state.orders || []).filter((o) => o.user_id === user.id);
     const myAddresses = (state.addresses || []).filter((a) => a.user_id === user.id);
     const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && (r.user_id === user.id || r.reporter_name === user.name));
+    const myCollectedCoupons = (state.collectedCoupons || []).map((id) => state.coupons.find((c) => c.id === id && c.is_active)).filter(Boolean);
 
     return `
       <div class="container">
@@ -6036,6 +6088,9 @@
             </a>
             <a href="#/account/orders" class="dash-nav-item ${subTab === 'orders' ? 'active' : ''}">
               <i class="bi bi-box-seam"></i> My Orders (${myOrders.length})
+            </a>
+            <a href="#/account/coupons" class="dash-nav-item ${subTab === 'coupons' ? 'active' : ''}">
+              <i class="bi bi-ticket-perforated"></i> My Vouchers (${myCollectedCoupons.length})
             </a>
             <a href="#/account/addresses" class="dash-nav-item ${subTab === 'addresses' ? 'active' : ''}">
               <i class="bi bi-geo-alt"></i> Saved Addresses (${myAddresses.length})
@@ -6214,6 +6269,54 @@
                   </div>
                 `
                     : `<p style="color:var(--text-muted);font-size:13px;">You haven't submitted any reports yet.</p>`
+                }
+              </div>
+            `
+                : subTab === 'coupons'
+                ? `
+              <div class="page-card" style="background:#fff;padding:24px;border-radius:10px;border:1px solid #E2E8F0;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+                  <div>
+                    <h2 style="font-size:18px;font-weight:800;margin:0;"><i class="bi bi-ticket-perforated-fill" style="color:var(--haat-orange)"></i> My Collected Vouchers & Wallet (${myCollectedCoupons.length})</h2>
+                    <p style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">Vouchers collected in this individual account (${esc(user.name)}). Applied automatically at Cart & Checkout.</p>
+                  </div>
+                  <a href="#/deals" class="btn-village-outline" style="font-size:12px;padding:6px 14px;">
+                    <i class="bi bi-gift"></i> Browse Deals & Vouchers &rarr;
+                  </a>
+                </div>
+                ${
+                  myCollectedCoupons.length
+                    ? `
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;">
+                    ${myCollectedCoupons
+                      .map((c) => {
+                        const scopeText = getCouponScopeLabel(c);
+                        const discountText = c.discount_type === 'percent' ? `${c.discount_value}% OFF` : `${money(c.discount_value)} OFF`;
+                        return `
+                        <div style="border:1.5px solid #E2E8F0;border-radius:10px;padding:16px;background:#F8FAFC;position:relative;">
+                          <span class="status-badge active" style="position:absolute;top:12px;right:12px;font-size:10.5px;"><i class="bi bi-check-circle-fill"></i> In Wallet</span>
+                          <span class="role-badge-tag role-badge-customer" style="margin-bottom:6px;">${esc(scopeText)}</span>
+                          <strong style="display:block;font-size:18px;color:var(--haat-orange);margin:4px 0;">${esc(discountText)}</strong>
+                          <div style="font-family:var(--font-mono);font-size:13px;font-weight:800;color:var(--haat-primary);background:#fff;border:1px dashed #CBD5E1;padding:4px 8px;border-radius:4px;display:inline-block;margin:4px 0;">${esc(c.code)}</div>
+                          <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">Min Spend: ${money(c.min_order)} ${c.max_discount ? `• Max Cap: ${money(c.max_discount)}` : ''}</div>
+                          <div style="margin-top:12px;display:flex;gap:8px;">
+                            <a href="#/cart" class="btn-village-primary" style="font-size:11.5px;padding:5px 12px;text-decoration:none;"><i class="bi bi-bag-check"></i> Use in Cart</a>
+                            <a href="#/products" class="btn-secondary" style="font-size:11.5px;padding:5px 10px;text-decoration:none;">Shop Now</a>
+                          </div>
+                        </div>
+                      `;
+                      })
+                      .join('')}
+                  </div>
+                `
+                    : `
+                  <div style="text-align:center;padding:40px 20px;border:1.5px dashed #CBD5E1;border-radius:8px;">
+                    <i class="bi bi-ticket-perforated" style="font-size:36px;color:#94A3B8;display:block;margin-bottom:10px;"></i>
+                    <h3 style="font-size:15px;font-weight:700;color:#1E293B;margin-bottom:4px;">No Vouchers in this Account Wallet</h3>
+                    <p style="font-size:12.5px;color:var(--text-muted);max-width:440px;margin:0 auto 16px;">Vouchers in HAAT are strictly personal to each account. Browse the Deals & Campaign center to collect exclusive discounts for ${esc(user.name)}.</p>
+                    <a href="#/deals" class="btn-village-primary" style="font-size:12px;padding:8px 18px;text-decoration:none;"><i class="bi bi-gift"></i> Collect Available Vouchers</a>
+                  </div>
+                `
                 }
               </div>
             `

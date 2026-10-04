@@ -13,6 +13,8 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  window.$ = $;
+  window.$$ = $$;
 
   const esc = (value) =>
     String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -33,7 +35,7 @@
       const st = typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null;
       return st?.store_name || (state.stores && state.stores[0]?.store_name) || 'ABC Fashion Store';
     }
-    if (role === 'customer') return state.currentUser?.name || 'Rahim Sakib';
+    if (role === 'customer') return state.currentUser?.name || 'Customer';
     return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'User';
   }
   window.getDisplayRoleName = getDisplayRoleName;
@@ -86,13 +88,13 @@
 
   // 1. USERS (Clean role names: Admin, HATEX, Rider's name, Customer's name, Seller's store name)
   const defaultUsers = [
-    { id: 1, name: 'Rahim Sakib', email: 'customer@haat.com.bd', role: 'customer', phone: '01711223344', status: 'active' },
-    { id: 2, name: 'ABC Fashion Store', email: 'seller@abc-fashion.com', role: 'seller', phone: '01811223344', status: 'active' },
-    { id: 3, name: 'XYZ Electronics & Gadgets', email: 'seller@xyz-electronics.com', role: 'seller', phone: '01911223344', status: 'active' },
-    { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344', status: 'active' },
-    { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344', status: 'active' },
-    { id: 6, name: 'Tareq Ahmed', email: 'tareq@hatex.com.bd', role: 'rider', phone: '01822334455', status: 'active' },
-    { id: 7, name: 'Sumon Mia', email: 'sumon@hatex.com.bd', role: 'rider', phone: '01933445566', status: 'active' }
+    { id: 1, name: 'Rahim Sakib', email: 'customer@haat.com.bd', role: 'customer', phone: '01711223344', status: 'active', password: 'haat2026' },
+    { id: 2, name: 'ABC Fashion Store', email: 'seller@abc-fashion.com', role: 'seller', phone: '01811223344', status: 'active', password: 'haat2026' },
+    { id: 3, name: 'XYZ Electronics & Gadgets', email: 'seller@xyz-electronics.com', role: 'seller', phone: '01911223344', status: 'active', password: 'haat2026' },
+    { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344', status: 'active', password: 'haat2026' },
+    { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344', status: 'active', password: 'haat2026' },
+    { id: 6, name: 'Tareq Ahmed', email: 'tareq@hatex.com.bd', role: 'rider', phone: '01822334455', status: 'active', password: 'haat2026' },
+    { id: 7, name: 'Sumon Mia', email: 'sumon@hatex.com.bd', role: 'rider', phone: '01933445566', status: 'active', password: 'haat2026' }
   ];
 
   // 2. STORES (Seller Mini-Stores with internal coordinates & seller-controlled delivery charge / free delivery / auto-greeting)
@@ -1240,7 +1242,9 @@
 
     // Active session (null = Guest / Logged out)
     activeRole: readStorage('activeRole', null), // null | 'customer' | 'seller' | 'admin' | 'hatex' | 'rider'
+    currentUserId: readStorage('currentUserId', null),
     currentUser: null,
+    lastAuthEmail: readStorage('lastAuthEmail', ''),
     cart: readStorage('cart', [
       { product_id: 1, store_id: 1, quantity: 1, variant_name: 'Ivory White', variant_value: '42' },
       { product_id: 3, store_id: 2, quantity: 1, variant_name: 'Midnight Black', variant_value: 'Standard' }
@@ -1276,7 +1280,15 @@
       if (u.role === 'admin') u.name = 'Admin';
       if (u.role === 'logistics' && (u.name.includes('Central') || u.name.includes('HATEX'))) u.name = 'HATEX';
       if (u.name.includes('(Rider')) u.name = u.name.replace(/\s*\(Rider.*?\)/gi, '').trim();
+      if (!u.password) {
+        const storedPw = typeof localStorage !== 'undefined' ? localStorage.getItem('HAAT_PW_' + (u.email || '').toLowerCase()) : null;
+        u.password = storedPw || 'haat2026';
+      }
     });
+    if (state.activeRole && !state.currentUserId && state.users.length) {
+      const match = state.users.find((u) => u.role === state.activeRole);
+      if (match) state.currentUserId = match.id;
+    }
     state.stores.forEach((s) => {
       if (s.id === 1) { s.delivery_charge = 60; s.free_delivery = 0; }
       else if (s.id === 2) { s.delivery_charge = 70; s.free_delivery = 0; }
@@ -1406,6 +1418,8 @@
     writeStorage('appliedCoupon', state.appliedCoupon);
     writeStorage('appSettings', state.appSettings);
     writeStorage('activeRole', state.activeRole);
+    writeStorage('currentUserId', state.currentUserId);
+    writeStorage('lastAuthEmail', state.lastAuthEmail);
     writeStorage('cart', state.cart);
     writeStorage('wishlist', state.wishlist);
     updateGlobalHeader();
@@ -1414,19 +1428,33 @@
   function resolveCurrentUser() {
     if (!state.activeRole) {
       state.currentUser = null;
+      state.currentUserId = null;
       return;
     }
+    let user = null;
+    if (state.currentUserId) {
+      user = state.users.find((u) => u.id === state.currentUserId);
+    }
+    if (user) {
+      state.currentUser = user;
+      if (user.role === 'seller') {
+        const sellerStore = state.stores.find((s) => s.user_id === user.id) || state.stores[0];
+        if (sellerStore) state.currentUser.name = sellerStore.store_name;
+      }
+      return;
+    }
+
     if (state.activeRole === 'customer') {
       state.currentUser = state.users.find((u) => u.role === 'customer') || state.users[0];
     } else if (state.activeRole === 'seller') {
       state.currentUser = state.users.find((u) => u.role === 'seller') || state.users[1];
-      const sellerStore = state.stores.find((s) => s.user_id === state.currentUser.id) || state.stores[0];
+      const sellerStore = state.stores.find((s) => s.user_id === state.currentUser?.id) || state.stores[0];
       if (sellerStore) state.currentUser.name = sellerStore.store_name;
     } else if (state.activeRole === 'admin') {
-      state.currentUser = state.users.find((u) => u.role === 'admin') || { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344' };
+      state.currentUser = state.users.find((u) => u.role === 'admin') || { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344', password: 'haat2026' };
       state.currentUser.name = 'Admin';
     } else if (state.activeRole === 'hatex') {
-      state.currentUser = state.users.find((u) => u.name === 'HATEX' || (u.role === 'logistics' && u.id === 5)) || { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344' };
+      state.currentUser = state.users.find((u) => u.name === 'HATEX' || (u.role === 'logistics' && u.id === 5)) || { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344', password: 'haat2026' };
       state.currentUser.name = 'HATEX';
     } else if (state.activeRole === 'rider') {
       const rUser = state.users.find((u) => u.role === 'rider' || u.id === 6) || state.users[5];
@@ -1434,6 +1462,9 @@
       state.currentUser = rUser;
     } else {
       state.currentUser = null;
+    }
+    if (state.currentUser) {
+      state.currentUserId = state.currentUser.id;
     }
   }
   resolveCurrentUser();
@@ -1446,6 +1477,7 @@
     clearTimeout(t._timer);
     t._timer = setTimeout(() => t.classList.remove('show'), 3500);
   }
+  window.showToast = showToast;
 
   function openModal(htmlContent) {
     const modal = $('#globalModal');
@@ -1608,8 +1640,8 @@
       const roleMap = {
         customer: {
           label: 'Customer',
-          name: state.currentUser.name || 'Rahim Sakib',
-          avatar: (state.currentUser.name || 'R')[0].toUpperCase(),
+          name: state.currentUser.name || 'Customer',
+          avatar: (state.currentUser.name || 'C')[0].toUpperCase(),
           badgeClass: 'role-badge-customer',
           bgClass: 'bg-customer',
           dashUrl: '#/account',
@@ -2214,7 +2246,7 @@
         sender_name: store.store_name,
         sender_role: 'seller',
         receiver_id: state.currentUser?.id || 1,
-        receiver_name: state.currentUser?.name || 'Rahim Sakib',
+        receiver_name: state.currentUser?.name || 'Customer',
         receiver_role: 'customer',
         message: greetingText,
         created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2393,7 +2425,7 @@
       id: Date.now(),
       order_id: orderId,
       sender_id: state.currentUser?.id || 1,
-      sender_name: state.currentUser?.name || 'Rahim Sakib',
+      sender_name: state.currentUser?.name || 'Customer',
       sender_role: 'customer',
       receiver_id: targetRole === 'rider' ? 6 : 2,
       receiver_name: targetName,
@@ -2428,7 +2460,7 @@
         sender_name: store.store_name,
         sender_role: 'seller',
         receiver_id: state.currentUser?.id || 1,
-        receiver_name: state.currentUser?.name || 'Rahim Sakib',
+        receiver_name: state.currentUser?.name || 'Customer',
         receiver_role: 'customer',
         message: greetingMsg,
         created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2471,7 +2503,7 @@
           sender_name: targetName,
           sender_role: 'rider',
           receiver_id: state.currentUser?.id || 1,
-          receiver_name: state.currentUser?.name || 'Rahim Sakib',
+          receiver_name: state.currentUser?.name || 'Customer',
           receiver_role: 'customer',
           message: replyText,
           created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2510,7 +2542,7 @@
           sender_name: targetName,
           sender_role: 'seller',
           receiver_id: state.currentUser?.id || 1,
-          receiver_name: state.currentUser?.name || 'Rahim Sakib',
+          receiver_name: state.currentUser?.name || 'Customer',
           receiver_role: 'customer',
           message: replyText,
           created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2549,6 +2581,12 @@
   window.handleLogout = function () {
     state.activeRole = null;
     state.currentUser = null;
+    state.currentUserId = null;
+    writeStorage('currentUserId', null);
+    try {
+      localStorage.removeItem('HAAT_API_USER_ID');
+      localStorage.removeItem('HAAT_API_ROLE');
+    } catch {}
     persist();
     showToast('You have been logged out. Browsing as Guest.', 'info');
     location.hash = '#/';
@@ -2557,6 +2595,22 @@
 
   window.instantDemoLogin = function (role) {
     state.activeRole = role;
+    if (role === 'customer') {
+      const u = state.users.find(x => x.id === 1 || x.email === 'customer@haat.com.bd') || state.users.find(x => x.role === 'customer');
+      state.currentUserId = u ? u.id : 1;
+    } else if (role === 'seller') {
+      const u = state.users.find(x => x.id === 2 || x.email === 'seller@abc-fashion.com') || state.users.find(x => x.role === 'seller');
+      state.currentUserId = u ? u.id : 2;
+    } else if (role === 'rider') {
+      const u = state.users.find(x => x.id === 6 || x.role === 'rider');
+      state.currentUserId = u ? u.id : 6;
+    } else if (role === 'admin') {
+      const u = state.users.find(x => x.id === 4 || x.role === 'admin');
+      state.currentUserId = u ? u.id : 4;
+    } else if (role === 'hatex') {
+      const u = state.users.find(x => x.id === 5 || x.name === 'HATEX');
+      state.currentUserId = u ? u.id : 5;
+    }
     resolveCurrentUser();
     persist();
     showToast(`Logged in as ${state.currentUser?.name || role.toUpperCase()}!`, 'success');
@@ -2582,20 +2636,46 @@
   window.handleAuthLogin = function (form) {
     const fd = new FormData(form);
     const email = (fd.get('email') || '').trim().toLowerCase();
+    const password = (fd.get('password') || '').trim();
     const role = fd.get('role');
 
-    let user = state.users.find((u) => u.email.toLowerCase() === email);
-    if (!user && role) {
-      if (role === 'rider') user = state.users.find((u) => u.role === 'rider' || u.id === 6);
-      else if (role === 'hatex') user = state.users.find((u) => u.name === 'HATEX' || u.id === 5);
-      else user = state.users.find((u) => u.role === role);
+    if (!email) {
+      showToast('Please enter your email address.', 'warning');
+      return;
+    }
+    if (!password) {
+      showToast('Please enter your password.', 'warning');
+      return;
     }
 
-    const effectiveRole = role || user?.role || 'customer';
+    let user = state.users.find((u) => u.email.toLowerCase() === email);
+    if (!user) {
+      showToast('No account found with this email address. Please register or check your email.', 'warning');
+      return;
+    }
+
+    const savedPw = user.password || (typeof localStorage !== 'undefined' ? localStorage.getItem('HAAT_PW_' + email) : null);
+    const isDemo = [1, 2, 3, 4, 5, 6, 7].includes(user.id) || ['customer@haat.com.bd', 'seller@abc-fashion.com', 'seller@xyz-electronics.com', 'admin@haat.com.bd', 'logistics@hatex.com.bd', 'tareq@hatex.com.bd', 'sumon@hatex.com.bd'].includes(user.email.toLowerCase());
+
+    let match = false;
+    if (savedPw && password === savedPw) {
+      match = true;
+    } else if (isDemo && (password === 'demo1234' || password === 'haat2026')) {
+      match = true;
+    }
+
+    if (!match) {
+      showToast('Incorrect password. Please verify your credentials and try again.', 'warning');
+      return;
+    }
+
+    const effectiveRole = user.role || role || 'customer';
     state.activeRole = effectiveRole;
-    resolveCurrentUser();
+    state.currentUserId = user.id;
+    state.currentUser = user;
+    state.lastAuthEmail = user.email;
     persist();
-    showToast(`Welcome back, ${state.currentUser.name}!`, 'success');
+    showToast(`Welcome back, ${user.name}!`, 'success');
 
     if (effectiveRole === 'seller') location.hash = '#/dash/seller';
     else if (effectiveRole === 'admin') location.hash = '#/dash/admin';
@@ -2617,28 +2697,62 @@
     const name = (fd.get('name') || '').trim();
     const email = (fd.get('email') || '').trim().toLowerCase();
     const phone = (fd.get('phone') || '').trim();
+    const password = (fd.get('password') || '').trim();
+    const cpassword = (fd.get('cpassword') || '').trim();
 
     if (!name || !email) {
-      showToast('Please provide your name and email address.', 'info');
+      showToast('Please provide your name and email address.', 'warning');
       return;
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      showToast('Please provide a valid email address.', 'warning');
+      return;
+    }
+
+    if (!password) {
+      showToast('Please enter a password.', 'warning');
+      return;
+    }
+    if (password.length < 6) {
+      showToast('Password must be at least 6 characters long.', 'warning');
+      return;
+    }
+    if (password !== cpassword) {
+      showToast('Passwords do not match. Please ensure Password and Confirm Password are identical.', 'warning');
+      return;
+    }
+
+    if (state.users.some((u) => u.email.toLowerCase() === email)) {
+      showToast('An account with this email address already exists. Please log in.', 'warning');
+      return;
+    }
+
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('HAAT_PW_' + email, password);
+    }
+    state.lastAuthEmail = email;
+
+    const nextId = Math.max(...state.users.map((u) => u.id || 0), 0) + 1;
+
     if (regRole === 'customer') {
-      const address = fd.get('address') || 'House 14, Road 3, Dhanmondi';
+      const address = (fd.get('address') || 'House 14, Road 3, Dhanmondi').trim();
       const district = fd.get('district') || 'Dhaka';
       const division = fd.get('division') || 'Dhaka';
 
       const newUser = {
-        id: state.users.length + 1,
+        id: nextId,
         name: name,
         email: email,
         role: 'customer',
         phone: phone,
+        password: password,
         status: 'active'
       };
       state.users.push(newUser);
       state.addresses.push({
-        id: state.addresses.length + 1,
+        id: Math.max(...state.addresses.map((a) => a.id || 0), 0) + 1,
         user_id: newUser.id,
         label: 'Home',
         name: name,
@@ -2653,30 +2767,32 @@
       });
 
       state.activeRole = 'customer';
+      state.currentUserId = newUser.id;
       state.currentUser = newUser;
       persist();
-      showToast(`Welcome to HAAT, ${name}!`, 'success');
+      showToast(`Welcome to HAAT, ${name}! Your account has been registered.`, 'success');
       location.hash = '#/account';
       render();
     } else if (regRole === 'seller') {
       const storeName = (fd.get('store_name') || `${name}'s Store`).trim();
       const category = fd.get('category') || 'Fashion & Apparel';
-      const address = fd.get('address') || 'Shop 8, New Market';
+      const address = (fd.get('address') || 'Shop 8, New Market').trim();
       const district = fd.get('district') || 'Dhaka';
 
       const newUser = {
-        id: state.users.length + 1,
+        id: nextId,
         name: storeName,
         email: email,
         role: 'seller',
         phone: phone,
+        password: password,
         status: 'active'
       };
       state.users.push(newUser);
 
       const slug = storeName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       const newStore = {
-        id: state.stores.length + 1,
+        id: Math.max(...state.stores.map((s) => s.id || 0), 0) + 1,
         user_id: newUser.id,
         store_name: storeName,
         store_slug: slug,
@@ -2701,9 +2817,10 @@
       state.stores.push(newStore);
 
       state.activeRole = 'seller';
+      state.currentUserId = newUser.id;
       state.currentUser = newUser;
       persist();
-      showToast(`Store "${storeName}" is now active and open! You can submit verification documents in Store Settings for official admin approval.`, 'success');
+      showToast(`Store "${storeName}" is now active and open!`, 'success');
       location.hash = '#/dash/seller';
       render();
     } else if (regRole === 'rider') {
@@ -2711,17 +2828,18 @@
       const cleanName = name.replace(/\s*\(Rider.*?\)/gi, '').trim();
 
       const newUser = {
-        id: state.users.length + 1,
+        id: nextId,
         name: cleanName,
         email: email,
         role: 'rider',
         phone: phone,
+        password: password,
         status: 'active'
       };
       state.users.push(newUser);
 
       state.riders.push({
-        id: state.riders.length + 1,
+        id: Math.max(...state.riders.map((r) => r.id || 0), 0) + 1,
         user_id: newUser.id,
         name: cleanName,
         phone: phone,
@@ -2733,6 +2851,7 @@
       });
 
       state.activeRole = 'rider';
+      state.currentUserId = newUser.id;
       state.currentUser = newUser;
       persist();
       showToast(`Rider ${cleanName} registered!`, 'success');
@@ -4634,7 +4753,8 @@
       return '';
     }
 
-    const defaultAddr = state.addresses.find((a) => a.is_default) || state.addresses[0];
+    const userAddrs = state.currentUser ? state.addresses.filter(a => a.user_id === state.currentUser.id) : [];
+    const defaultAddr = userAddrs.find((a) => a.is_default) || userAddrs[0] || (state.currentUser ? { name: state.currentUser.name, phone: state.currentUser.phone, address: '', district: 'Dhaka', division: 'Dhaka' } : null);
     const selectedMethod = state.selectedPaymentMethod || 'cash_on_delivery';
 
     // Compute totals with dynamic Seller / Product / Admin Campaign delivery charges
@@ -4712,17 +4832,17 @@
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
               <div class="form-group-auth">
                 <label>Recipient Name</label>
-                <input type="text" name="shipping_name" value="${esc(defaultAddr?.name || 'Rahim Sakib')}" required style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
+                <input type="text" name="shipping_name" value="${esc(defaultAddr?.name || state.currentUser?.name || '')}" required placeholder="Full Name" style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
               </div>
               <div class="form-group-auth">
                 <label>Contact Phone</label>
-                <input type="text" name="shipping_phone" value="${esc(defaultAddr?.phone || '01711223344')}" required style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
+                <input type="text" name="shipping_phone" value="${esc(defaultAddr?.phone || state.currentUser?.phone || '')}" required placeholder="017xxxxxxxx" style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
               </div>
             </div>
 
             <div class="form-group-auth" style="margin-bottom:12px;">
               <label>Street Address (House, Road, Area)</label>
-              <input type="text" name="shipping_address" value="${esc(defaultAddr?.address || 'House 12, Road 5, Mirpur 10')}" required style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
+              <input type="text" name="shipping_address" value="${esc(defaultAddr?.address || '')}" required placeholder="House, Road, Area" style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
             </div>
 
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
@@ -5073,7 +5193,7 @@
     const newOrder = {
       id: orderId,
       order_number: orderNumber,
-      user_id: 1,
+      user_id: state.currentUser?.id || state.currentUserId || 1,
       coupon_id: state.appliedCoupon?.id || null,
       total_amount: subtotal,
       shipping_cost: shippingCost,
@@ -5897,8 +6017,10 @@
       return '';
     }
 
-    const user = state.currentUser || state.users[0];
-    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer');
+    const user = state.currentUser || (state.currentUserId ? state.users.find((u) => u.id === state.currentUserId) : null) || state.users[0];
+    const myOrders = (state.orders || []).filter((o) => o.user_id === user.id);
+    const myAddresses = (state.addresses || []).filter((a) => a.user_id === user.id);
+    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && (r.user_id === user.id || r.reporter_name === user.name));
 
     return `
       <div class="container">
@@ -5913,10 +6035,10 @@
               <i class="bi bi-person"></i> My Profile
             </a>
             <a href="#/account/orders" class="dash-nav-item ${subTab === 'orders' ? 'active' : ''}">
-              <i class="bi bi-box-seam"></i> My Orders (${state.orders.length})
+              <i class="bi bi-box-seam"></i> My Orders (${myOrders.length})
             </a>
             <a href="#/account/addresses" class="dash-nav-item ${subTab === 'addresses' ? 'active' : ''}">
-              <i class="bi bi-geo-alt"></i> Saved Addresses (${state.addresses.length})
+              <i class="bi bi-geo-alt"></i> Saved Addresses (${myAddresses.length})
             </a>
             <a href="#/account/wishlist" class="dash-nav-item ${subTab === 'wishlist' ? 'active' : ''}">
               <i class="bi bi-heart"></i> Wishlist (${state.wishlist.length})
@@ -5950,31 +6072,35 @@
                       </tr>
                     </thead>
                     <tbody>
-                      ${state.orders
-                        .map((o) => {
-                          const orderItemsTotal = o.total_amount || (o.seller_orders || []).reduce((s, so) => s + (so.subtotal || 0), 0) || 0;
-                          const orderShipping = o.shipping_cost !== undefined ? o.shipping_cost : (o.seller_orders || []).reduce((s, so) => s + (so.shipping_cost || 0), 0) || 0;
-                          const orderGrandTotal = (o.grand_total && o.grand_total > 0) ? o.grand_total : Math.max(0, orderItemsTotal + orderShipping - (o.discount_amount || 0));
-                          return `
-                        <tr>
-                          <td><strong>${esc(o.order_number)}</strong></td>
-                          <td>${o.created_at.slice(0, 10)}</td>
-                          <td><span style="font-size:11.5px;font-weight:700;text-transform:uppercase;">${esc(o.payment?.method || 'COD')}</span></td>
-                          <td>${orderShipping === 0 ? '<span class="delivery-badge-free">FREE</span>' : money(orderShipping)}</td>
-                          <td><strong style="color:var(--haat-orange);">${money(orderGrandTotal)}</strong></td>
-                          <td><span class="status-badge ${o.order_status}">${esc(o.order_status.replace(/_/g, ' '))}</span></td>
-                          <td style="white-space:nowrap;display:flex;gap:6px;align-items:center;">
-                            <button type="button" class="btn-village-primary" onclick="window.viewCustomerOrderDetails('${esc(o.order_number)}')" style="padding:5px 12px;font-size:11.5px;font-weight:700;">
-                              <i class="bi bi-file-earmark-text"></i> Order Details
-                            </button>
-                            <a href="#/order/${esc(o.order_number)}" class="btn-secondary" style="padding:5px 10px;font-size:11.5px;font-weight:700;border-radius:4px;text-decoration:none;">
-                              <i class="bi bi-truck"></i> Track / Chat
-                            </a>
-                          </td>
-                        </tr>
-                      `;
-                        })
-                        .join('')}
+                      ${
+                        myOrders.length
+                          ? myOrders
+                              .map((o) => {
+                                const orderItemsTotal = o.total_amount || (o.seller_orders || []).reduce((s, so) => s + (so.subtotal || 0), 0) || 0;
+                                const orderShipping = o.shipping_cost !== undefined ? o.shipping_cost : (o.seller_orders || []).reduce((s, so) => s + (so.shipping_cost || 0), 0) || 0;
+                                const orderGrandTotal = (o.grand_total && o.grand_total > 0) ? o.grand_total : Math.max(0, orderItemsTotal + orderShipping - (o.discount_amount || 0));
+                                return `
+                              <tr>
+                                <td><strong>${esc(o.order_number)}</strong></td>
+                                <td>${o.created_at.slice(0, 10)}</td>
+                                <td><span style="font-size:11.5px;font-weight:700;text-transform:uppercase;">${esc(o.payment?.method || 'COD')}</span></td>
+                                <td>${orderShipping === 0 ? '<span class="delivery-badge-free">FREE</span>' : money(orderShipping)}</td>
+                                <td><strong style="color:var(--haat-orange);">${money(orderGrandTotal)}</strong></td>
+                                <td><span class="status-badge ${o.order_status}">${esc(o.order_status.replace(/_/g, ' '))}</span></td>
+                                <td style="white-space:nowrap;display:flex;gap:6px;align-items:center;">
+                                  <button type="button" class="btn-village-primary" onclick="window.viewCustomerOrderDetails('${esc(o.order_number)}')" style="padding:5px 12px;font-size:11.5px;font-weight:700;">
+                                    <i class="bi bi-file-earmark-text"></i> Order Details
+                                  </button>
+                                  <a href="#/order/${esc(o.order_number)}" class="btn-secondary" style="padding:5px 10px;font-size:11.5px;font-weight:700;border-radius:4px;text-decoration:none;">
+                                    <i class="bi bi-truck"></i> Track / Chat
+                                  </a>
+                                </td>
+                              </tr>
+                            `;
+                              })
+                              .join('')
+                          : `<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text-muted);"><i class="bi bi-box-seam" style="font-size:28px;display:block;margin-bottom:8px;color:#94A3B8;"></i>No orders placed yet. <a href="#/products" style="color:var(--haat-orange);font-weight:700;">Explore Products &rarr;</a></td></tr>`
+                      }
                     </tbody>
                   </table>
                 </div>
@@ -5991,31 +6117,35 @@
                   <button type="button" class="btn-village-primary" onclick="window.openAddAddressModal()">+ Add New Address</button>
                 </div>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;">
-                  ${state.addresses
-                    .map(
-                      (a) => `
-                    <div style="border:1.5px solid ${a.is_default ? 'var(--haat-orange)' : '#E2E8F0'};border-radius:8px;padding:16px;position:relative;background:#fff;">
-                      ${
-                        a.is_default
-                          ? '<span class="status-badge verified" style="position:absolute;top:12px;right:12px;"><i class="bi bi-check-circle-fill"></i> DEFAULT</span>'
-                          : `<button type="button" class="btn-secondary" style="position:absolute;top:12px;right:12px;padding:3px 9px;font-size:11px;border-radius:4px;" onclick="window.setDefaultAddress(${a.id})"><i class="bi bi-check2"></i> Set Default</button>`
-                      }
-                      <span class="role-badge-tag role-badge-customer" style="margin-bottom:6px;">${esc(a.label)}</span>
-                      <strong style="display:block;font-size:14px;color:#1E293B;">${esc(a.name)}</strong>
-                      <div style="font-size:12.5px;color:#475569;margin:4px 0;">${esc(a.address)}</div>
-                      <div style="font-size:12px;color:var(--text-muted);">${esc(a.district)}, ${esc(a.division)} - ${esc(a.postal_code)}</div>
-                      <div style="font-size:12px;color:#1E293B;margin-top:4px;">Phone: ${esc(a.phone)}</div>
-                      ${
-                        !a.is_default
-                          ? `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #E2E8F0;text-align:right;">
-                              <button type="button" style="background:none;border:none;color:#EF4444;font-size:11.5px;cursor:pointer;" onclick="window.deleteAddress(${a.id})"><i class="bi bi-trash"></i> Remove</button>
-                            </div>`
-                          : ''
-                      }
-                    </div>
-                  `
-                    )
-                    .join('')}
+                  ${
+                    myAddresses.length
+                      ? myAddresses
+                          .map(
+                            (a) => `
+                        <div style="border:1.5px solid ${a.is_default ? 'var(--haat-orange)' : '#E2E8F0'};border-radius:8px;padding:16px;position:relative;background:#fff;">
+                          ${
+                            a.is_default
+                              ? '<span class="status-badge verified" style="position:absolute;top:12px;right:12px;"><i class="bi bi-check-circle-fill"></i> DEFAULT</span>'
+                              : `<button type="button" class="btn-secondary" style="position:absolute;top:12px;right:12px;padding:3px 9px;font-size:11px;border-radius:4px;" onclick="window.setDefaultAddress(${a.id})"><i class="bi bi-check2"></i> Set Default</button>`
+                          }
+                          <span class="role-badge-tag role-badge-customer" style="margin-bottom:6px;">${esc(a.label)}</span>
+                          <strong style="display:block;font-size:14px;color:#1E293B;">${esc(a.name)}</strong>
+                          <div style="font-size:12.5px;color:#475569;margin:4px 0;">${esc(a.address)}</div>
+                          <div style="font-size:12px;color:var(--text-muted);">${esc(a.district)}, ${esc(a.division)} - ${esc(a.postal_code)}</div>
+                          <div style="font-size:12px;color:#1E293B;margin-top:4px;">Phone: ${esc(a.phone)}</div>
+                          ${
+                            !a.is_default
+                              ? `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #E2E8F0;text-align:right;">
+                                  <button type="button" style="background:none;border:none;color:#EF4444;font-size:11.5px;cursor:pointer;" onclick="window.deleteAddress(${a.id})"><i class="bi bi-trash"></i> Remove</button>
+                                </div>`
+                              : ''
+                          }
+                        </div>
+                      `
+                          )
+                          .join('')
+                      : `<div style="grid-column: 1 / -1;text-align:center;padding:36px;color:var(--text-muted);border:1.5px dashed #CBD5E1;border-radius:8px;"><i class="bi bi-geo-alt" style="font-size:28px;display:block;margin-bottom:8px;color:#94A3B8;"></i>No delivery addresses saved yet. Click "+ Add New Address" above to save a delivery address.</div>`
+                  }
                 </div>
               </div>
             `
@@ -6312,8 +6442,8 @@
   window.handleAddAddress = function (form) {
     const fd = new FormData(form);
     const newAddr = {
-      id: state.addresses.length + 1,
-      user_id: 1,
+      id: Math.max(...state.addresses.map((a) => a.id || 0), 0) + 1,
+      user_id: state.currentUser?.id || state.currentUserId || 1,
       label: fd.get('label') || 'Other',
       name: fd.get('name'),
       phone: fd.get('phone'),
@@ -7168,12 +7298,12 @@
             `
                 : subTab === 'orders'
                 ? `
-              <!-- Daraz-Style Seller Orders Status Editor (Order Accepted, Pending, Processing, Packaged, Out for Delivery) -->
+              <!-- Seller Orders & Fulfillment Pipeline -->
               <div class="page-card" style="background:#fff;padding:24px;border-radius:10px;border:1px solid #E2E8F0;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
                   <div>
-                    <h2 style="font-size:18px;font-weight:800;margin:0;">Seller Orders & Daraz-Style Status Editor (${storeOrders.length})</h2>
-                    <p style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">Update order lifecycle stages: <strong>Pending &rarr; Order Accepted &rarr; Processing &rarr; Packaged &rarr; Out for Delivery</strong>.</p>
+                    <h2 style="font-size:18px;font-weight:800;margin:0;">Seller Orders & Fulfillment Pipeline (${storeOrders.length})</h2>
+                    <p style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">Merchant fulfillment workflow: <strong>Pending &rarr; Order Accepted &rarr; Processing &rarr; Packaged</strong>. Once an order is marked <strong>Packaged</strong>, it is handed over to <strong>HATEX Logistics</strong> for dispatch and doorstep delivery.</p>
                   </div>
                   <a href="#/dash/seller/tracking" class="btn-village-outline" style="font-size:12px;padding:6px 14px;">
                     <i class="bi bi-truck"></i> Open Seller Product Tracking &rarr;
@@ -7188,19 +7318,65 @@
                         <th>Items & Delivery</th>
                         <th>Total</th>
                         <th>Current Status</th>
-                        <th>Edit Order Status (Daraz Flow)</th>
+                        <th>Merchant Fulfillment Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       ${storeOrders
                         .map((so) => {
-                          const statuses = [
-                            { val: 'pending', label: 'Pending' },
-                            { val: 'order_accepted', label: 'Order Accepted' },
-                            { val: 'processing', label: 'Processing' },
-                            { val: 'packaged', label: 'Packaged' },
-                            { val: 'out_for_delivery', label: 'Out for Delivery' }
-                          ];
+                          const isHandedToHatex = ['packaged', 'reached_hub', 'assigned_to_rider', 'in_transit', 'out_for_delivery', 'delivered'].includes(so.status);
+                          const isDelivered = so.status === 'delivered';
+                          const isCancelled = so.status === 'cancelled';
+
+                          let actionHtml = '';
+                          if (isDelivered) {
+                            actionHtml = `
+                              <span class="status-badge delivered" style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:6px;font-size:11.5px;font-weight:700;">
+                                <i class="bi bi-check-circle-fill"></i> Delivered
+                              </span>
+                            `;
+                          } else if (isCancelled) {
+                            actionHtml = `
+                              <span class="status-badge cancelled" style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:6px;font-size:11.5px;font-weight:700;">
+                                <i class="bi bi-x-circle-fill"></i> Cancelled
+                              </span>
+                            `;
+                          } else if (isHandedToHatex) {
+                            actionHtml = `
+                              <div style="display:flex;flex-direction:column;gap:3px;">
+                                <span class="status-badge" style="background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:6px;font-size:11px;font-weight:700;">
+                                  <i class="bi bi-box-seam-fill"></i> Packaged &bull; In HATEX Care
+                                </span>
+                                <a href="#/dash/seller/tracking" style="font-size:11px;color:var(--haat-primary);font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:3px;">
+                                  <i class="bi bi-truck"></i> Track with HATEX &rarr;
+                                </a>
+                              </div>
+                            `;
+                          } else {
+                            const merchantStatuses = [
+                              { val: 'pending', label: 'Pending' },
+                              { val: 'order_accepted', label: 'Order Accepted' },
+                              { val: 'processing', label: 'Processing' },
+                              { val: 'packaged', label: 'Packaged (Ready for HATEX)' }
+                            ];
+                            actionHtml = `
+                              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                                <select id="sellerStatusSelect_${so.id}" style="padding:6px 10px;border:1.5px solid #CBD5E1;border-radius:6px;font-size:12px;font-weight:700;background:#fff;">
+                                  ${merchantStatuses
+                                    .map(
+                                      (st) => `
+                                    <option value="${st.val}" ${so.status === st.val ? 'selected' : ''}>${st.label}</option>
+                                  `
+                                    )
+                                    .join('')}
+                                </select>
+                                <button type="button" class="btn-village-primary" style="padding:6px 12px;font-size:11.5px;" onclick="window.updateSellerOrderStatus(${so.id})">
+                                  <i class="bi bi-check2-circle"></i> Update
+                                </button>
+                              </div>
+                            `;
+                          }
+
                           return `
                         <tr>
                           <td>
@@ -7217,22 +7393,7 @@
                           </td>
                           <td><strong style="color:var(--haat-orange);">${money(so.seller_total)}</strong></td>
                           <td><span class="status-badge ${esc(so.status)}">${esc(so.status.replace(/_/g, ' ').toUpperCase())}</span></td>
-                          <td>
-                            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                              <select id="sellerStatusSelect_${so.id}" style="padding:6px 10px;border:1.5px solid #CBD5E1;border-radius:6px;font-size:12px;font-weight:700;background:#fff;">
-                                ${statuses
-                                  .map(
-                                    (st) => `
-                                  <option value="${st.val}" ${so.status === st.val ? 'selected' : ''}>${st.label}</option>
-                                `
-                                  )
-                                  .join('')}
-                              </select>
-                              <button type="button" class="btn-village-primary" style="padding:6px 12px;font-size:11.5px;" onclick="window.updateSellerOrderStatus(${so.id}, $('#sellerStatusSelect_${so.id}').value)">
-                                <i class="bi bi-check2-circle"></i> Update
-                              </button>
-                            </div>
-                          </td>
+                          <td>${actionHtml}</td>
                         </tr>
                       `;
                         })
@@ -7866,30 +8027,67 @@
   };
 
   window.updateSellerOrderStatus = function (sellerOrderId, newStatus) {
+    const sId = Number(sellerOrderId);
+    if (!newStatus) {
+      const selectEl = document.getElementById(`sellerStatusSelect_${sId}`);
+      if (selectEl) newStatus = selectEl.value;
+    }
+    if (!newStatus) {
+      showToast('Please select a valid order status.', 'warning');
+      return;
+    }
+
+    const allowedSellerStatuses = ['pending', 'order_accepted', 'processing', 'packaged'];
+    if (!allowedSellerStatuses.includes(newStatus)) {
+      showToast('Merchants can only update orders up to "Packaged". Remaining transit is managed by HATEX Logistics.', 'warning');
+      return;
+    }
+
     const store = getSellerOwnStore() || state.stores[0];
+    let orderFound = false;
+
     state.orders.forEach((o) => {
-      const so = (o.seller_orders || []).find((s) => s.id === Number(sellerOrderId));
+      const so = (o.seller_orders || []).find((s) => s.id === sId);
       if (so) {
+        orderFound = true;
+        const hatexStages = ['packaged', 'reached_hub', 'assigned_to_rider', 'in_transit', 'out_for_delivery', 'delivered'];
+        if (hatexStages.includes(so.status) && so.status !== newStatus) {
+          showToast('This package has already been handed over to HATEX Logistics and cannot be altered by merchant.', 'info');
+          return;
+        }
+
         so.status = newStatus;
+        if (!Array.isArray(so.tracking)) so.tracking = [];
+
+        const statusDescriptions = {
+          pending: 'Order pending merchant confirmation.',
+          order_accepted: 'Order accepted by merchant.',
+          processing: 'Merchant is preparing and packing items.',
+          packaged: 'Items packaged by merchant. Package handed over to HATEX Logistics for hub collection and delivery.'
+        };
+
         so.tracking.push({
           id: Date.now(),
           status: newStatus,
-          location: `${store.store_name}, ${store.district}`,
+          location: `${store.store_name}, ${store.district || 'Dhaka'}`,
           latitude: store.latitude,
           longitude: store.longitude,
-          note: `Seller updated order status to "${newStatus.replace(/_/g, ' ').toUpperCase()}".`,
+          note: statusDescriptions[newStatus] || `Merchant updated order status to "${newStatus.replace(/_/g, ' ').toUpperCase()}".`,
           updated_by: store.store_name,
           created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
-        if (newStatus === 'out_for_delivery') {
-          o.order_status = 'out_for_delivery';
-        } else if (newStatus === 'packaged') {
-          const allPackaged = o.seller_orders.every((s) =>
+
+        if (newStatus === 'packaged') {
+          const allPackaged = (o.seller_orders || []).every((s) =>
             ['packaged', 'ready_to_ship', 'reached_hub', 'assigned_to_rider', 'in_transit', 'out_for_delivery', 'delivered'].includes(s.status)
           );
-          if (allPackaged) o.order_status = 'packaged';
+          if (allPackaged) {
+            o.order_status = 'packaged';
+          }
         } else if (newStatus === 'processing' || newStatus === 'order_accepted') {
-          o.order_status = newStatus;
+          if (o.order_status === 'pending') {
+            o.order_status = newStatus;
+          }
         }
 
         window.addNotification({
@@ -7903,16 +8101,26 @@
 
         if (newStatus === 'packaged') {
           window.addNotification({
-            title: `Package #${so.package_id} Ready`,
-            message: `${store.store_name} has packed package #${so.package_id} for Order #${o.order_number}. Ready for HATEX Hub pickup.`,
+            title: `Package Ready for HATEX Pickup`,
+            message: `${store.store_name} has packaged Order #${o.order_number} (Package #${so.package_id || so.seller_order_number}). Ready for HATEX pickup.`,
             type: 'order',
             target_role: 'hatex',
             order_id: o.id,
             link: `#/dash/hatex`
           });
         }
+
+        if (window.haatApiSync && typeof window.haatApiSync.saveOrder === 'function') {
+          window.haatApiSync.saveOrder(o);
+        }
       }
     });
+
+    if (!orderFound) {
+      showToast('Order not found.', 'danger');
+      return;
+    }
+
     persist();
     showToast(`Order status updated to "${newStatus.replace(/_/g, ' ').toUpperCase()}"!`, 'success');
     render();
@@ -8636,7 +8844,7 @@
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
                   <div>
                     <h2 style="font-size:18px;font-weight:800;margin-bottom:2px;">Admin Category & Subcategory Coupons</h2>
-                    <p style="font-size:12.5px;color:var(--text-muted);">Admin coupons apply exclusively to an Admin-selected Category or Subcategory. Customers collect them Daraz-style.</p>
+                    <p style="font-size:12.5px;color:var(--text-muted);">Admin coupons apply exclusively to an Admin-selected Category or Subcategory. Customers collect vouchers to apply instant discounts during checkout.</p>
                   </div>
                   <button class="btn-village-primary" style="font-size:12px;padding:8px 14px;" onclick="window.openAdminCouponModal()">
                     <i class="bi bi-plus-lg"></i> Add Category/Subcategory Coupon
@@ -8954,7 +9162,7 @@
                     <h3 style="font-size:15px;font-weight:800;">Active Banner Slides (${(state.banners || []).filter((b) => b.is_active).length})</h3>
                     <button class="btn-secondary" style="font-size:11px;padding:4px 10px;" onclick="location.hash='#/dash/admin/banners'">Manage Slider &rarr;</button>
                   </div>
-                  <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Multi-slide Daraz-style homepage carousel controlled by Admin.</p>
+                  <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Interactive multi-slide hero banner carousel controlled by Admin.</p>
                   <div style="display:flex;flex-direction:column;gap:6px;">
                     ${(state.banners || []).slice(0, 3).map((b) => `<div style="font-size:12px;padding:6px 10px;background:#F8FAFC;border-radius:6px;border:1px solid #E2E8F0;display:flex;justify-content:space-between;"><strong>${esc(b.title)}</strong><span class="status-badge ${b.is_active ? 'active' : 'pending'}">${b.is_active ? 'Live' : 'Hidden'}</span></div>`).join('')}
                   </div>
@@ -11129,7 +11337,7 @@
                   <label>Email Address</label>
                   <div class="input-with-icon">
                     <i class="bi bi-envelope"></i>
-                    <input type="email" name="email" value="customer@haat.com.bd" required placeholder="name@domain.com">
+                    <input type="email" name="email" value="${esc(state.lastAuthEmail || '')}" required placeholder="name@domain.com">
                   </div>
                 </div>
 
@@ -11137,7 +11345,7 @@
                   <label>Password</label>
                   <div class="input-with-icon">
                     <i class="bi bi-lock"></i>
-                    <input type="password" name="password" value="demo1234" required placeholder="••••••••">
+                    <input type="password" name="password" value="" required placeholder="••••••••">
                   </div>
                 </div>
 
@@ -11146,9 +11354,9 @@
                   <div class="input-with-icon">
                     <i class="bi bi-person-badge"></i>
                     <select name="role">
-                      <option value="customer" selected>Customer (Rahim Sakib)</option>
-                      <option value="seller">Seller Store (ABC Fashion Store)</option>
-                      <option value="rider">Rider (Tareq Ahmed)</option>
+                      <option value="customer" selected>Customer</option>
+                      <option value="seller">Seller Store</option>
+                      <option value="rider">Rider</option>
                       <option value="admin">Admin</option>
                       <option value="hatex">HATEX</option>
                     </select>
@@ -11676,7 +11884,7 @@
         app.innerHTML = `
           <div class="container" style="margin-top:24px;margin-bottom:60px;">
             <h1 style="font-size:22px;font-weight:800;color:#1E293B;margin-bottom:6px;">Exclusive Marketplace Vouchers & Category Campaigns</h1>
-            <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Collect Daraz-style vouchers for selected categories, subcategories, and merchant stores.</p>
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Collect exclusive marketplace vouchers for selected categories, subcategories, and merchant stores.</p>
             <div class="voucher-strip-grid">
               ${activeCoupons.map((c) => renderDarazVoucherCard(c)).join('')}
             </div>

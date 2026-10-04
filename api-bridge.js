@@ -252,17 +252,39 @@
     /* Login */
     const _origLogin = window.handleAuthLogin;
     window.handleAuthLogin = async function (form) {
-      const fd  = new FormData(form);
+      const fd = new FormData(form);
       const email = (fd.get('email') || '').trim().toLowerCase();
-      const storedPw = localStorage.getItem('HAAT_PW_' + email) || 'haat2026';
-      const r = await apiPost('/auth.php?action=login', { email, password: storedPw });
+      const password = (fd.get('password') || '').trim();
+
+      if (!email || !password) {
+        _origLogin.call(this, form);
+        return;
+      }
+
+      const localUser = window.state.users.find(x => x.email.toLowerCase() === email);
+      const isDemo = localUser && ([1, 2, 3, 4, 5, 6, 7].includes(localUser.id) || ['customer@haat.com.bd', 'seller@abc-fashion.com', 'admin@haat.com.bd', 'logistics@hatex.com.bd', 'tareq@hatex.com.bd'].includes(email));
+      let apiPw = password;
+      if (isDemo && password === 'demo1234') {
+        apiPw = 'haat2026';
+      }
+
+      const r = await apiPost('/auth.php?action=login', { email, password: apiPw });
       if (r.ok && r.data.user) {
         localStorage.setItem('HAAT_API_USER_ID', r.data.user.id);
         localStorage.setItem('HAAT_API_ROLE',    r.data.user.role);
+        localStorage.setItem('HAAT_PW_' + email, password);
         const u = r.data.user;
-        if (!window.state.users.find(x => x.email.toLowerCase() === email)) {
-          window.state.users.push({ id: u.id, name: u.name, email: u.email, role: u.role, phone: '', status: 'active' });
+        let existing = window.state.users.find(x => x.email.toLowerCase() === email);
+        if (!existing) {
+          existing = { id: u.id, name: u.name, email: u.email, role: u.role, phone: '', password: password, status: 'active' };
+          window.state.users.push(existing);
+        } else {
+          existing.id = u.id;
+          existing.password = password;
         }
+        window.state.currentUserId = existing.id;
+        window.state.currentUser = existing;
+        window.state.activeRole = existing.role;
       }
       _origLogin.call(this, form);
     };
@@ -270,13 +292,24 @@
     /* Register */
     const _origReg = window.handleAuthRegister;
     window.handleAuthRegister = async function (form) {
-      const fd       = new FormData(form);
-      const email    = (fd.get('email') || '').trim().toLowerCase();
-      const password = fd.get('password') || 'haat2026';
-      const regRole  = window.state.registerRole || 'customer';
+      const fd = new FormData(form);
+      const email = (fd.get('email') || '').trim().toLowerCase();
+      const password = (fd.get('password') || '').trim();
+      const cpassword = (fd.get('cpassword') || '').trim();
+      const name = (fd.get('name') || '').trim();
+
+      // Ensure given and confirm password match before calling API
+      if (!name || !email || !password || password.length < 6 || password !== cpassword) {
+        _origReg.call(this, form);
+        return;
+      }
+
+      const regRole = window.state.registerRole || 'customer';
       const r = await apiPost('/auth.php?action=register', {
-        name:     (fd.get('name') || '').trim(),
-        email, phone: (fd.get('phone') || '').trim(), password,
+        name,
+        email,
+        phone: (fd.get('phone') || '').trim(),
+        password,
         role: (regRole === 'seller') ? 'seller' : 'customer',
       });
       if (r.ok && r.data.user) {
@@ -284,9 +317,21 @@
         localStorage.setItem('HAAT_API_ROLE',    r.data.user.role);
         localStorage.setItem('HAAT_PW_' + email, password);
         if (regRole === 'seller') {
-          const storeName = (fd.get('store_name') || fd.get('name') + "'s Store").trim();
+          const storeName = (fd.get('store_name') || name + "'s Store").trim();
           await apiPost('/stores.php', { store_name: storeName }).catch(() => {});
         }
+        _origReg.call(this, form);
+        if (window.state.currentUser) {
+          window.state.currentUser.id = r.data.user.id;
+          window.state.currentUserId = r.data.user.id;
+          if (window.persist) window.persist();
+        }
+        return;
+      } else if (r.status === 409) {
+        if (typeof window.showToast === 'function') {
+          window.showToast('An account with this email address already exists. Please log in.', 'warning');
+        }
+        return;
       }
       _origReg.call(this, form);
     };
@@ -297,7 +342,7 @@
       await apiPost('/auth.php?action=logout', {}).catch(() => {});
       localStorage.removeItem('HAAT_API_USER_ID');
       localStorage.removeItem('HAAT_API_ROLE');
-      _origOut.call(this);
+      if (_origOut) _origOut.call(this);
     };
   }
 

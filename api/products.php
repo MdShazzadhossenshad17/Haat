@@ -332,15 +332,21 @@ if ($method === 'DELETE') {
     if (!$id) json_error('id required', 422);
 
     if ($user['role'] === 'seller') {
+        $sid = $user['store_id'];
+        if (!$sid) {
+            $sStmt = $db->prepare('SELECT id FROM stores WHERE user_id = ?');
+            $sStmt->execute([$user['id']]);
+            $sid = (int) $sStmt->fetchColumn();
+        }
         $stmt = $db->prepare('DELETE FROM products WHERE id = ? AND store_id = ?');
-        $stmt->execute([$id, $user['store_id']]);
+        $stmt->execute([$id, $sid]);
     } elseif ($user['role'] === 'admin') {
         $stmt = $db->prepare('DELETE FROM products WHERE id = ?');
         $stmt->execute([$id]);
     } else {
         json_error('Forbidden', 403);
     }
-    if ($stmt->rowCount() === 0) json_error('Product not found', 404);
+    if ($stmt->rowCount() === 0) json_error('Product not found or not yours', 404);
     json_ok(['message' => 'Product deleted']);
 }
 

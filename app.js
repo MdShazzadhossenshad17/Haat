@@ -7343,10 +7343,13 @@
                             <td>
                               <div style="display:flex;gap:6px;flex-wrap:wrap;">
                                 <button type="button" class="btn-village-primary" style="padding:4px 9px;font-size:11px;" onclick="window.openEditProductDeliveryModal(${p.id})">
-                                  <i class="bi bi-pencil-square"></i> Edit Product & Delivery
+                                  <i class="bi bi-pencil-square"></i> Edit
                                 </button>
                                 <button type="button" class="btn-village-outline" style="padding:4px 9px;font-size:11px;" onclick="window.openEditInventoryModal(${p.id})">
                                   Stock
+                                </button>
+                                <button type="button" class="btn-secondary" style="padding:4px 9px;font-size:11px;color:#DC2626;border-color:#FCA5A5;background:#FEF2F2;" onclick="window.deleteSellerProduct(${p.id})">
+                                  <i class="bi bi-trash"></i> Delete
                                 </button>
                               </div>
                             </td>
@@ -7978,6 +7981,26 @@
       persist();
       render();
     }
+  };
+
+  window.deleteSellerProduct = function (productId) {
+    const prod = getProduct(productId);
+    if (!prod) return;
+    if (!confirm(`Are you sure you want to permanently remove "${prod.name}" from your store?`)) {
+      return;
+    }
+
+    state.products = state.products.filter((p) => Number(p.id) !== Number(productId));
+    state.inventory = state.inventory.filter((i) => Number(i.product_id) !== Number(productId));
+
+    persist();
+
+    if (window.haatApiSync && typeof window.haatApiSync.deleteProduct === 'function') {
+      window.haatApiSync.deleteProduct(productId);
+    }
+
+    showToast(`Product "${prod.name}" has been removed from your store.`, 'info');
+    render();
   };
 
   /* =========================================================================
@@ -9654,6 +9677,11 @@
     });
 
     persist();
+
+    if (window.haatApiSync && typeof window.haatApiSync.approveStore === 'function') {
+      window.haatApiSync.approveStore(s.id);
+    }
+
     closeModal();
     showToast(`Store "${s.store_name}" is now officially verified!`, 'success');
     render();
@@ -9684,6 +9712,11 @@
     });
 
     persist();
+
+    if (window.haatApiSync && typeof window.haatApiSync.rejectStore === 'function') {
+      window.haatApiSync.rejectStore(s.id);
+    }
+
     closeModal();
     showToast(`Store verification rejected. Reason sent to seller.`, 'warning');
     render();

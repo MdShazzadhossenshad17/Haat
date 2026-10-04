@@ -776,6 +776,8 @@
       const fallbackColors = ['#1E4332','#0284C7','#15803D','#B45309','#F85606'];
       const dbStores = stores.data.stores.map(s => {
         const col = fallbackColors[s.id % fallbackColors.length] || '#1E4332';
+        const localStore = (st.stores || []).find(x => x.id === s.id);
+        const mappedStatus = s.status === 'approved' ? 'verified' : (s.status === 'rejected' ? 'rejected' : (s.status === 'pending' ? 'pending' : (localStore?.verification_status || 'verified')));
         return {
           id: s.id, user_id: s.user_id,
           store_name: s.store_name, store_slug: s.store_slug,
@@ -790,8 +792,12 @@
           delivery_charge: s.delivery_charge ?? 60,
           free_delivery:   s.free_delivery   ?? 0,
           auto_greeting: s.auto_greeting || `Welcome to ${s.store_name}!`,
-          status: 'active', is_published: 1,
-          verification_status: s.verification_status || 'unverified',
+          status: s.status || 'approved',
+          is_published: s.is_published ?? 1,
+          verification_status: mappedStatus,
+          verification_documents: localStore?.verification_documents || s.verification_documents || null,
+          verified_at: s.status === 'approved' ? (localStore?.verified_at || s.created_at) : null,
+          rejection_reason: localStore?.rejection_reason || null,
         };
       });
 
@@ -974,9 +980,12 @@
   });
 
   window.haatApiSync = {
-    saveProduct: (p) => p.id && apiPut(`/products.php?id=${p.id}`, p).catch(() => {}),
-    saveOrder:   (o) => o.id && apiPut(`/orders.php?id=${o.id}`, { order_status: o.order_status }).catch(() => {}),
+    saveProduct:   (p) => p.id && apiPut(`/products.php?id=${p.id}`, p).catch(() => {}),
+    deleteProduct: (pid) => apiDel(`/products.php?id=${pid}`).catch(() => {}),
+    saveOrder:     (o) => o.id && apiPut(`/orders.php?id=${o.id}`, { order_status: o.order_status }).catch(() => {}),
     saveInventory: (pid, qty) => apiPut(`/inventory.php?product_id=${pid}`, { quantity: qty }).catch(() => {}),
+    approveStore:  (sid) => apiPut(`/stores.php?action=approve&id=${sid}`).catch(() => {}),
+    rejectStore:   (sid) => apiPut(`/stores.php?action=reject&id=${sid}`).catch(() => {}),
     syncCustomerOrders,
     syncSellerOrders,
     syncWishlist,

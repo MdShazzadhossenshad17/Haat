@@ -77,8 +77,29 @@ if ($method === 'POST') {
         $user['id'],
     ]);
 
-    // Update seller order status
-    $db->prepare('UPDATE seller_orders SET status = ? WHERE id = ?')->execute([$status, $soId]);
+    // Map tracking status to seller_orders status
+    $soStatusMap = [
+        'order_placed'     => 'pending',
+        'processing'       => 'processing',
+        'picked_up'        => 'shipped',
+        'in_transit'       => 'shipped',
+        'out_for_delivery' => 'shipped',
+        'delivered'        => 'delivered',
+        'failed'           => 'cancelled',
+        'returned'         => 'refunded'
+    ];
+    $soStatus = $soStatusMap[$status] ?? 'shipped';
+    $db->prepare('UPDATE seller_orders SET status = ? WHERE id = ?')->execute([$soStatus, $soId]);
+
+    // If delivered, check if parent order is completed
+    if ($soStatus === 'delivered') {
+        $chkParent = $db->prepare('SELECT order_id, COUNT(*) as total, SUM(CASE WHEN status = "delivered" THEN 1 ELSE 0 END) as delivered_cnt FROM seller_orders WHERE order_id = (SELECT order_id FROM seller_orders WHERE id = ?)');
+        $chkParent->execute([$soId]);
+        $pRow = $chkParent->fetch();
+        if ($pRow && (int)$pRow['total'] === (int)$pRow['delivered_cnt']) {
+            $db->prepare("UPDATE orders SET status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$pRow['order_id']]);
+        }
+    }
 
     json_ok(['message' => 'Tracking event added'], 201);
 }

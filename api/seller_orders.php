@@ -162,9 +162,45 @@ if ($method === 'PUT') {
     $fields = [];
     $params = [];
 
+    $trackStatus = null;
     if (isset($data['status'])) {
+        $statusVal = strtolower(trim($data['status']));
+        $statusMap = [
+            'order_accepted'   => 'confirmed',
+            'accept'           => 'confirmed',
+            'confirmed'        => 'confirmed',
+            'processing'       => 'processing',
+            'packaged'         => 'ready_to_ship',
+            'ready'            => 'ready_to_ship',
+            'ready_to_ship'    => 'ready_to_ship',
+            'shipped'          => 'shipped',
+            'dispatch'         => 'shipped',
+            'picked_up'        => 'shipped',
+            'in_transit'       => 'shipped',
+            'out_for_delivery' => 'shipped',
+            'delivered'        => 'delivered',
+            'cancelled'        => 'cancelled',
+            'refunded'         => 'refunded'
+        ];
+        $sellerOrderStatus = $statusMap[$statusVal] ?? $statusVal;
+        $validStatuses = ['pending','confirmed','processing','ready_to_ship','shipped','delivered','cancelled','refunded'];
+        if (!in_array($sellerOrderStatus, $validStatuses)) {
+            json_error('Invalid status: ' . $data['status'], 422);
+        }
         $fields[] = 'status = ?';
-        $params[] = $data['status'];
+        $params[] = $sellerOrderStatus;
+
+        $trackMap = [
+            'pending'       => 'order_placed',
+            'confirmed'     => 'processing',
+            'processing'    => 'processing',
+            'ready_to_ship' => 'processing',
+            'shipped'       => 'in_transit',
+            'delivered'     => 'delivered',
+            'cancelled'     => 'failed',
+            'refunded'      => 'returned'
+        ];
+        $trackStatus = $trackMap[$sellerOrderStatus] ?? 'processing';
     }
     if (isset($data['assigned_rider_id']) && $user['role'] !== 'seller') {
         $fields[] = 'assigned_rider_id = ?';
@@ -176,17 +212,27 @@ if ($method === 'PUT') {
     $db->prepare('UPDATE seller_orders SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
 
     // Auto-insert delivery tracking on status change
-    if (isset($data['status'])) {
+    if ($trackStatus) {
         $db->prepare(
             'INSERT INTO delivery_tracking (seller_order_id, rider_id, status, note, updated_by)
              VALUES (?, ?, ?, ?, ?)'
         )->execute([
             $id,
             $so['assigned_rider_id'] ?? null,
-            $data['status'],
+            $trackStatus,
             $data['note'] ?? null,
             $user['id'],
         ]);
+
+        // If delivered, also check if all suborders for parent order are delivered
+        if ($sellerOrderStatus === 'delivered') {
+            $chkParent = $db->prepare('SELECT order_id, COUNT(*) as total, SUM(CASE WHEN status = "delivered" THEN 1 ELSE 0 END) as delivered_cnt FROM seller_orders WHERE order_id = ?');
+            $chkParent->execute([$so['order_id']]);
+            $pRow = $chkParent->fetch();
+            if ($pRow && (int)$pRow['total'] === (int)$pRow['delivered_cnt']) {
+                $db->prepare("UPDATE orders SET status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$so['order_id']]);
+            }
+        }
 
         // Notify customer
         $cusStmt = $db->prepare('SELECT o.user_id FROM orders o JOIN seller_orders so ON so.order_id = o.id WHERE so.id = ?');
@@ -200,7 +246,7 @@ if ($method === 'PUT') {
                 $cusRow['user_id'],
                 $so['order_id'],
                 'Order Status Updated',
-                "Your order #{$so['seller_order_number']} is now: " . strtoupper($data['status']),
+                "Your order #{$so['seller_order_number']} is now: " . strtoupper($sellerOrderStatus),
                 'order_status',
             ]);
         }

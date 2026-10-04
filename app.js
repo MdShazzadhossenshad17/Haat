@@ -8295,15 +8295,27 @@
     render();
   };
 
+  window.previewProductPhoto = function (input, num) {
+    const previewContainer = document.getElementById(`prodPreview_${num}`);
+    if (!previewContainer) return;
+    if (input.files && input.files[0]) {
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        previewContainer.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
+      };
+      reader.readAsDataURL(input.files[0]);
+    }
+  };
+
   window.openAddProductModal = function () {
     const store = getSellerOwnStore() || state.stores[0];
     openModal(`
       <h3 style="font-size:18px;font-weight:800;margin-bottom:14px;"><i class="bi bi-plus-circle"></i> Add New Product to ${esc(store.store_name)}</h3>
-      <form onsubmit="event.preventDefault(); window.handleAddProduct(this);">
+      <form onsubmit="event.preventDefault(); window.handleAddProduct(this);" enctype="multipart/form-data">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;">
           <div>
             <label style="font-size:12px;font-weight:700;">Product Name</label>
-            <input type="text" name="name" placeholder="e.g. Classic Oxford Cotton Shirt" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
+            <input type="text" name="name" placeholder="e.g. Classic Handloom Jamdani Panjabi" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
           </div>
           <div>
             <label style="font-size:12px;font-weight:700;">SKU Code</label>
@@ -8336,7 +8348,7 @@
             <input type="number" name="stock" value="25" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
           </div>
         </div>
-        <div style="background:#ECFDF5;border:1px solid #86EFAC;border-radius:8px;padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center;">
+        <div style="background:#ECFDF5;border:1px solid #86EFAC;border-radius:8px;padding:10px;margin-bottom:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center;">
           <div>
             <label style="font-size:11.5px;font-weight:700;">Delivery Charge (৳)</label>
             <input type="number" min="0" name="delivery_charge" value="${store.delivery_charge ?? 60}" style="width:100%;padding:7px;border:1px solid #CBD5E1;border-radius:4px;">
@@ -8347,11 +8359,41 @@
             </label>
           </div>
         </div>
-        <div style="margin-bottom:12px;">
-          <label style="font-size:12px;font-weight:700;">Image URL</label>
-          <input type="text" name="image_1" value="panjabi.jpg" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
+
+        <!-- 3-Photo Upload Section (Stored as Binary MEDIUMBLOB in MySQL) -->
+        <div style="margin-bottom:14px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:12px;">
+          <label style="font-size:12px;font-weight:800;color:#1E293B;display:block;margin-bottom:4px;">
+            <i class="bi bi-images" style="color:var(--haat-orange);"></i> Product Photos (Up to 3 Photos • Saved as Binary BLOB in MySQL)
+          </label>
+          <small style="color:var(--text-muted);font-size:11px;display:block;margin-bottom:10px;">Select image files from your computer to store directly in the database table.</small>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+            <div style="border:1.5px dashed #CBD5E1;border-radius:6px;padding:8px;background:#fff;text-align:center;">
+              <span style="font-size:11px;font-weight:700;color:#334155;display:block;margin-bottom:4px;">1. Main Photo</span>
+              <input type="file" name="image_1" accept="image/*" onchange="window.previewProductPhoto(this, 1)" style="font-size:10px;width:100%;">
+              <div id="prodPreview_1" style="margin-top:6px;height:65px;border-radius:4px;overflow:hidden;background:#F1F5F9;display:grid;place-items:center;border:1px solid #E2E8F0;">
+                <span style="font-size:10px;color:#94A3B8;"><i class="bi bi-card-image"></i> Photo 1</span>
+              </div>
+            </div>
+            <div style="border:1.5px dashed #CBD5E1;border-radius:6px;padding:8px;background:#fff;text-align:center;">
+              <span style="font-size:11px;font-weight:700;color:#334155;display:block;margin-bottom:4px;">2. Angle View</span>
+              <input type="file" name="image_2" accept="image/*" onchange="window.previewProductPhoto(this, 2)" style="font-size:10px;width:100%;">
+              <div id="prodPreview_2" style="margin-top:6px;height:65px;border-radius:4px;overflow:hidden;background:#F1F5F9;display:grid;place-items:center;border:1px solid #E2E8F0;">
+                <span style="font-size:10px;color:#94A3B8;"><i class="bi bi-card-image"></i> Photo 2</span>
+              </div>
+            </div>
+            <div style="border:1.5px dashed #CBD5E1;border-radius:6px;padding:8px;background:#fff;text-align:center;">
+              <span style="font-size:11px;font-weight:700;color:#334155;display:block;margin-bottom:4px;">3. Detail / Packaging</span>
+              <input type="file" name="image_3" accept="image/*" onchange="window.previewProductPhoto(this, 3)" style="font-size:10px;width:100%;">
+              <div id="prodPreview_3" style="margin-top:6px;height:65px;border-radius:4px;overflow:hidden;background:#F1F5F9;display:grid;place-items:center;border:1px solid #E2E8F0;">
+                <span style="font-size:10px;color:#94A3B8;"><i class="bi bi-card-image"></i> Photo 3</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <button type="submit" class="btn-village-primary" style="width:100%;">Create Product</button>
+
+        <button type="submit" class="btn-village-primary" style="width:100%;padding:10px;font-size:13.5px;font-weight:700;">
+          <i class="bi bi-cloud-arrow-up-fill"></i> Upload & Create Product
+        </button>
       </form>
     `);
   };
@@ -8361,6 +8403,12 @@
     const store = getSellerOwnStore() || state.stores[0];
     const newId = state.products.reduce((m, p) => Math.max(m, p.id), 0) + 1;
     const name = fd.get('name');
+
+    // Default placeholder fallback or generated preview
+    const preview1 = document.querySelector('#prodPreview_1 img')?.src || 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80';
+    const preview2 = document.querySelector('#prodPreview_2 img')?.src || '';
+    const preview3 = document.querySelector('#prodPreview_3 img')?.src || '';
+
     const newProd = {
       id: newId,
       store_id: store.id,
@@ -8376,9 +8424,11 @@
       delivery_charge: fd.get('delivery_charge') !== '' ? parseFloat(fd.get('delivery_charge')) : null,
       free_delivery: fd.get('free_delivery') ? 1 : 0,
       is_flash_sale: 0,
-      image_1: fd.get('image_1'),
+      image_1: preview1,
+      image_2: preview2,
+      image_3: preview3,
       variant_1_name: 'Color',
-      variant_1_value: 'Black, White',
+      variant_1_value: 'Standard',
       is_featured: 1,
       rating: 5.0,
       reviews_count: 1
@@ -8387,13 +8437,13 @@
     state.inventory.push({
       id: state.inventory.length + 1,
       product_id: newId,
-      quantity: parseInt(fd.get('stock') || 20),
+      quantity: parseInt(fd.get('stock') || 25),
       reserved_quantity: 0,
       location: 'Shelf A-1'
     });
     persist();
     closeModal();
-    showToast('New product added with delivery configuration!', 'success');
+    showToast('New product added with 3 photos and delivery configuration!', 'success');
     render();
   };
 

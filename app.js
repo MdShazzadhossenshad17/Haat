@@ -5819,7 +5819,7 @@
      ========================================================================= */
 
   function renderDashboardMessagesView() {
-    const customerOrders = state.orders;
+    const customerOrders = (state.orders || []).filter(o => String(o.user_id) === String(state.currentUser?.id));
     const channels = [];
     const seenIds = new Set();
 
@@ -6747,57 +6747,62 @@
 
     // Ensure default channels exist for Seller, Rider, HATEX, Admin
     if (viewerRole === 'seller') {
-      const store = getSellerOwnStore() || state.stores[0];
-      if (!channelMap[`seller_${store.id}_order_1`]) {
-        channelMap[`seller_${store.id}_order_1`] = {
-          id: `seller_${store.id}_order_1`,
-          otherRole: 'customer',
-          otherName: 'Rahim Sakib',
-          color: '#F85606',
-          avatar: 'C',
-          messages: [],
-          unreadCount: 0
-        };
-      }
-      if (!channelMap['seller_1_order_admin']) {
-        channelMap['seller_1_order_admin'] = {
-          id: 'seller_1_order_admin',
-          otherRole: 'admin',
-          otherName: 'Admin',
-          color: '#2563EB',
-          avatar: 'A',
-          messages: [],
-          unreadCount: 0
-        };
-      }
-      if (!channelMap['hatex_seller_1_order_1']) {
-        channelMap['hatex_seller_1_order_1'] = {
-          id: 'hatex_seller_1_order_1',
-          otherRole: 'hatex',
-          otherName: 'HATEX',
-          color: '#7C3AED',
-          avatar: 'H',
-          messages: [],
-          unreadCount: 0
-        };
+      const store = typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null;
+      if (store) {
+        if (!channelMap[`seller_${store.id}_order_1`]) {
+          channelMap[`seller_${store.id}_order_1`] = {
+            id: `seller_${store.id}_order_1`,
+            otherRole: 'customer',
+            otherName: 'Customer Inquiries',
+            color: '#F85606',
+            avatar: 'C',
+            messages: [],
+            unreadCount: 0
+          };
+        }
+        if (!channelMap[`seller_${store.id}_order_admin`]) {
+          channelMap[`seller_${store.id}_order_admin`] = {
+            id: `seller_${store.id}_order_admin`,
+            otherRole: 'admin',
+            otherName: 'Admin',
+            color: '#2563EB',
+            avatar: 'A',
+            messages: [],
+            unreadCount: 0
+          };
+        }
+        if (!channelMap[`hatex_seller_${store.id}_order_1`]) {
+          channelMap[`hatex_seller_${store.id}_order_1`] = {
+            id: `hatex_seller_${store.id}_order_1`,
+            otherRole: 'hatex',
+            otherName: 'HATEX',
+            color: '#7C3AED',
+            avatar: 'H',
+            messages: [],
+            unreadCount: 0
+          };
+        }
       }
     } else if (viewerRole === 'rider') {
-      if (!channelMap['rider_1_order_1']) {
-        channelMap['rider_1_order_1'] = {
-          id: 'rider_1_order_1',
+      const curRiderUser = state.currentUser;
+      const rider = (state.riders || []).find((r) => String(r.user_id) === String(curRiderUser?.id) || (curRiderUser && r.name === curRiderUser.name)) || state.riders[0];
+      const rId = rider?.id || 1;
+      if (!channelMap[`rider_${rId}_order_1`]) {
+        channelMap[`rider_${rId}_order_1`] = {
+          id: `rider_${rId}_order_1`,
           otherRole: 'customer',
-          otherName: 'Rahim Sakib',
+          otherName: 'Delivery Customer',
           color: '#F85606',
           avatar: 'C',
           messages: [],
           unreadCount: 0
         };
       }
-      if (!channelMap['hatex_rider_1_order_1']) {
-        channelMap['hatex_rider_1_order_1'] = {
-          id: 'hatex_rider_1_order_1',
+      if (!channelMap[`hatex_rider_${rId}_order_1`]) {
+        channelMap[`hatex_rider_${rId}_order_1`] = {
+          id: `hatex_rider_${rId}_order_1`,
           otherRole: 'hatex',
-          otherName: 'HATEX',
+          otherName: 'HATEX Logistics',
           color: '#7C3AED',
           avatar: 'H',
           messages: [],

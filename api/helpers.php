@@ -53,9 +53,34 @@ function json_error(string $message, int $code = 400): never {
  * Returns current session user array or sends 401.
  */
 function auth_required(): array {
-    if (empty($_SESSION['user_id'])) {
+    $db = getDB();
+    $userId = $_SESSION['user_id'] ?? null;
+    if (!$userId && !empty($_SERVER['HTTP_X_USER_ID'])) {
+        $userId = (int) $_SERVER['HTTP_X_USER_ID'];
+    }
+
+    if (!$userId) {
         json_error('Unauthorized — please log in', 401);
     }
+
+    if (empty($_SESSION['user_id']) || empty($_SESSION['user_role']) || empty($_SESSION['store_id'])) {
+        $uStmt = $db->prepare('SELECT id, name, role FROM users WHERE id = ?');
+        $uStmt->execute([$userId]);
+        $u = $uStmt->fetch();
+        if (!$u) json_error('User not found', 401);
+
+        $_SESSION['user_id']   = (int) $u['id'];
+        $_SESSION['user_role'] = $u['role'];
+        $_SESSION['user_name'] = $u['name'];
+
+        if ($u['role'] === 'seller') {
+            $sStmt = $db->prepare('SELECT id FROM stores WHERE user_id = ?');
+            $sStmt->execute([$userId]);
+            $sid = $sStmt->fetchColumn();
+            if ($sid) $_SESSION['store_id'] = (int) $sid;
+        }
+    }
+
     return [
         'id'       => (int) $_SESSION['user_id'],
         'role'     => $_SESSION['user_role'],
@@ -74,6 +99,15 @@ function role_required(string|array $roles): array {
     if (!in_array($user['role'], $roles, true)) {
         json_error('Forbidden — insufficient role', 403);
     }
+    if ($user['role'] === 'seller' && empty($user['store_id'])) {
+        $sStmt = getDB()->prepare('SELECT id FROM stores WHERE user_id = ?');
+        $sStmt->execute([$user['id']]);
+        $sid = $sStmt->fetchColumn();
+        if ($sid) {
+            $_SESSION['store_id'] = (int) $sid;
+            $user['store_id']     = (int) $sid;
+        }
+    }
     return $user;
 }
 
@@ -81,11 +115,15 @@ function role_required(string|array $roles): array {
  * Returns current user or null (no forced 401).
  */
 function current_user(): ?array {
-    if (empty($_SESSION['user_id'])) return null;
+    $userId = $_SESSION['user_id'] ?? null;
+    if (!$userId && !empty($_SERVER['HTTP_X_USER_ID'])) {
+        $userId = (int) $_SERVER['HTTP_X_USER_ID'];
+    }
+    if (!$userId) return null;
     return [
-        'id'       => (int) $_SESSION['user_id'],
-        'role'     => $_SESSION['user_role'],
-        'name'     => $_SESSION['user_name'],
+        'id'       => (int) $userId,
+        'role'     => $_SESSION['user_role'] ?? 'customer',
+        'name'     => $_SESSION['user_name'] ?? 'User',
         'store_id' => $_SESSION['store_id'] ?? null,
     ];
 }

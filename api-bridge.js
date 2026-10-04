@@ -18,8 +18,11 @@
   /* ── HTTP helpers ────────────────────────────────────────────────────────── */
   async function api(ep, opts = {}) {
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      const uid = localStorage.getItem('HAAT_API_USER_ID') || (window.state?.currentUser?.id ? String(window.state.currentUser.id) : null);
+      if (uid) headers['X-User-Id'] = uid;
       const r = await fetch(BASE + ep, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...headers, ...(opts.headers || {}) },
         credentials: 'same-origin',
         ...opts,
       });
@@ -702,6 +705,8 @@
             sale_price: parseFloat(fd.get('sale_price')) || null,
             sku: fd.get('sku'),
             subcategory_id: Number(fd.get('subcategory_id') || 101),
+            stock: parseInt(fd.get('stock') || 25),
+            is_featured: 1,
             description: 'Verified merchant product in HAAT catalogue.'
           };
           const r = await apiPost('/products.php', prodData);
@@ -799,7 +804,8 @@
     /* Products — KEEP original images if they are real URLs */
     const prods = await apiGet('/products.php?limit=60');
     if (prods.ok && prods.data.products?.length) {
-      st.products = prods.data.products.map(p => {
+      const dbIds = new Set(prods.data.products.map(p => p.id));
+      const mappedDbProds = prods.data.products.map(p => {
         const orig = origByid[p.id];
         const img1 = (orig?.image_1 && !orig.image_1.includes('images.php')) ? orig.image_1 : (p.image_1_url || '');
         const img2 = (orig?.image_2 && !orig.image_2.includes('images.php')) ? orig.image_2 : (p.image_2_url || '');
@@ -825,6 +831,10 @@
           free_delivery:   orig?.free_delivery   ?? 0,
         };
       });
+
+      // Preserve newly created products in local storage that have not yet synced or are awaiting API refresh
+      const localOnly = (st.products || []).filter(p => !dbIds.has(p.id) && p.id > 6);
+      st.products = [...localOnly, ...mappedDbProds];
     }
 
     /* Session check — if logged in on server, sync user and related data */

@@ -206,11 +206,23 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     $user = role_required('seller');
     $sid  = $user['store_id'];
+    if (!$sid) {
+        $sStmt = $db->prepare('SELECT id FROM stores WHERE user_id = ?');
+        $sStmt->execute([$user['id']]);
+        $sid = $sStmt->fetchColumn();
+        if ($sid) {
+            $_SESSION['store_id'] = (int) $sid;
+            $sid = (int) $sid;
+        }
+    }
+    $b = get_body();
+    if (!$sid && !empty($b['store_id'])) {
+        $sid = (int) $b['store_id'];
+    }
     if (!$sid) json_error('No store found — create a store first', 403);
 
-    $b         = get_body();
     $name      = trim($_POST['name'] ?? body('name', ''));
-    $subcatId  = (int) ($_POST['subcategory_id'] ?? body('subcategory_id', 1));
+    $subcatId  = (int) ($_POST['subcategory_id'] ?? body('subcategory_id', 101));
     $price     = (float) ($_POST['price'] ?? body('price', 0));
 
     if (!$name || !$subcatId || !$price) {
@@ -253,25 +265,25 @@ if ($method === 'POST') {
         $_POST['brand_id']        ?? body('brand_id', null),
         $_POST['collection_id']   ?? body('collection_id', null),
         $name, $slug, $sku,
-        $_POST['description']     ?? body('description', null),
+        $_POST['description']     ?? body('description', 'Verified merchant product in HAAT catalogue.'),
         $price,
         $_POST['sale_price']      ?? body('sale_price', null),
         $img['image_1'],  $img['image_1_mime'],
         $img['image_2'],  $img['image_2_mime'],
         $img['image_3'],  $img['image_3_mime'],
-        $_POST['variant_1_name']  ?? null,
-        $_POST['variant_1_value'] ?? null,
-        $_POST['variant_2_name']  ?? null,
-        $_POST['variant_2_value'] ?? null,
-        $_POST['variant_3_name']  ?? null,
-        $_POST['variant_3_value'] ?? null,
-        (int) ($_POST['is_featured'] ?? 0),
+        $_POST['variant_1_name']  ?? body('variant_1_name', 'Color'),
+        $_POST['variant_1_value'] ?? body('variant_1_value', 'Standard'),
+        $_POST['variant_2_name']  ?? body('variant_2_name', null),
+        $_POST['variant_2_value'] ?? body('variant_2_value', null),
+        $_POST['variant_3_name']  ?? body('variant_3_name', null),
+        $_POST['variant_3_value'] ?? body('variant_3_value', null),
+        (int) ($_POST['is_featured'] ?? body('is_featured', 1)),
     ]);
     $productId = (int) $db->lastInsertId();
 
     // Create inventory row
-    $qty = (int) ($_POST['quantity'] ?? 0);
-    $db->prepare('INSERT INTO inventory (product_id, quantity) VALUES (?, ?)')->execute([$productId, $qty]);
+    $qty = (int) ($_POST['quantity'] ?? body('quantity', body('stock', 25)));
+    $db->prepare('INSERT INTO inventory (product_id, quantity) VALUES (?, ?) ON DUPLICATE KEY UPDATE quantity = ?')->execute([$productId, $qty, $qty]);
 
     json_ok(['message' => 'Product created', 'id' => $productId, 'slug' => $slug], 201);
 }

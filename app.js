@@ -3609,6 +3609,7 @@
 
   function renderHomeView() {
     const featured = state.products.filter((p) => p.is_featured);
+    const displayProducts = featured.length ? featured : state.products.slice(0, 12);
     const activeCoupons = state.coupons.filter((c) => c.is_active);
     const couponSlides = [];
     for (let i = 0; i < activeCoupons.length; i += 2) {
@@ -3778,7 +3779,7 @@
           <a href="#/products" class="btn-see-all-flash">View All Products &rarr;</a>
         </div>
         <div class="marketplace-product-grid">
-          ${featured.map(renderProductCard).join('')}
+          ${displayProducts.map(renderProductCard).join('')}
         </div>
       </section>
 
@@ -8450,7 +8451,7 @@
       image_3: preview3,
       variant_1_name: 'Color',
       variant_1_value: 'Standard',
-      is_featured: 0,
+      is_featured: 1,
       rating: 0,
       reviews_count: 0
     };

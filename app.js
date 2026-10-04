@@ -30,10 +30,13 @@
   function getDisplayRoleName(role) {
     if (role === 'admin') return 'Admin';
     if (role === 'hatex') return 'HATEX';
-    if (role === 'rider') return (state.riders && state.riders[0]?.name) || 'Tareq Ahmed';
+    if (role === 'rider') {
+      const r = (state.riders || []).find((x) => x.user_id === state.currentUser?.id || (state.currentUser && x.name === state.currentUser.name));
+      return r?.name || state.currentUser?.name || (state.riders && state.riders[0]?.name) || 'Rider';
+    }
     if (role === 'seller') {
       const st = typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null;
-      return st?.store_name || (state.stores && state.stores[0]?.store_name) || 'ABC Fashion Store';
+      return st?.store_name || state.currentUser?.name || 'Seller Store';
     }
     if (role === 'customer') return state.currentUser?.name || 'Customer';
     return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'User';
@@ -1431,23 +1434,25 @@
       return;
     }
     let user = null;
-    if (state.currentUserId) {
-      user = state.users.find((u) => u.id === state.currentUserId);
+    if (state.currentUserId != null) {
+      user = state.users.find((u) => String(u.id) === String(state.currentUserId));
     }
     if (user) {
       state.currentUser = user;
       if (user.role === 'seller') {
-        const sellerStore = state.stores.find((s) => s.user_id === user.id) || state.stores[0];
+        const sellerStore = state.stores.find((s) => String(s.user_id) === String(user.id) || (user.store_id && String(s.id) === String(user.store_id)));
         if (sellerStore) state.currentUser.name = sellerStore.store_name;
       }
       return;
     }
 
     if (state.activeRole === 'customer') {
-      state.currentUser = state.users.find((u) => u.role === 'customer') || state.users[0];
+      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
+      state.currentUser = match || state.users.find((u) => u.role === 'customer') || state.users[0];
     } else if (state.activeRole === 'seller') {
-      state.currentUser = state.users.find((u) => u.role === 'seller') || state.users[1];
-      const sellerStore = state.stores.find((s) => s.user_id === state.currentUser?.id) || state.stores[0];
+      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
+      state.currentUser = match || state.users.find((u) => u.role === 'seller') || state.users[1];
+      const sellerStore = state.stores.find((s) => String(s.user_id) === String(state.currentUser?.id) || (state.currentUser?.store_id && String(s.id) === String(state.currentUser?.store_id)));
       if (sellerStore) state.currentUser.name = sellerStore.store_name;
     } else if (state.activeRole === 'admin') {
       state.currentUser = state.users.find((u) => u.role === 'admin') || { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344', password: 'haat2026' };
@@ -1456,7 +1461,8 @@
       state.currentUser = state.users.find((u) => u.name === 'HATEX' || (u.role === 'logistics' && u.id === 5)) || { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344', password: 'haat2026' };
       state.currentUser.name = 'HATEX';
     } else if (state.activeRole === 'rider') {
-      const rUser = state.users.find((u) => u.role === 'rider' || u.id === 6) || state.users[5];
+      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
+      const rUser = match || state.users.find((u) => u.role === 'rider' || u.id === 6) || state.users[5];
       if (rUser) rUser.name = rUser.name.replace(/\s*\(Rider.*?\)/gi, '').trim();
       state.currentUser = rUser;
     } else {
@@ -1592,7 +1598,15 @@
 
   function getSellerOwnStore() {
     if (state.activeRole !== 'seller') return null;
-    return state.stores.find((s) => s.user_id === state.currentUser?.id) || state.stores[0];
+    let st = state.stores.find((s) => (state.currentUser && String(s.user_id) === String(state.currentUser.id)) || (state.currentUser?.store_id && String(s.id) === String(state.currentUser.store_id)));
+    if (!st && state.currentUser) {
+      st = state.stores.find((s) => s.store_name === state.currentUser.name);
+    }
+    if (!st) {
+      if (state.currentUser?.id === 2 || state.currentUser?.email === 'seller@abc-fashion.com') st = state.stores[0];
+      else if (state.currentUser?.id === 3 || state.currentUser?.email === 'seller@xyz-electronics.com') st = state.stores[1];
+    }
+    return st || null;
   }
 
   window.handleVisitStore = function (storeSlug) {
@@ -1723,7 +1737,7 @@
         `;
       }
     } else {
-      const sellerStore = state.stores.find((s) => s.user_id === state.currentUser?.id) || state.stores[0];
+      const sellerStore = typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null;
       const cleanRiderName = (state.currentUser.name || 'Tareq Ahmed').replace(/\s*\(Rider.*?\)/gi, '').trim();
 
       const roleMap = {
@@ -1739,8 +1753,8 @@
         },
         seller: {
           label: 'Seller',
-          name: sellerStore?.store_name || 'ABC Fashion Store',
-          avatar: (sellerStore?.store_name || 'S')[0].toUpperCase(),
+          name: sellerStore?.store_name || state.currentUser?.name || 'Seller Store',
+          avatar: (sellerStore?.store_name || state.currentUser?.name || 'S')[0].toUpperCase(),
           badgeClass: 'role-badge-seller',
           bgClass: 'bg-seller',
           dashUrl: '#/dash/seller',
@@ -6115,10 +6129,10 @@
       return '';
     }
 
-    const user = state.currentUser || (state.currentUserId ? state.users.find((u) => u.id === state.currentUserId) : null) || state.users[0];
-    const myOrders = (state.orders || []).filter((o) => o.user_id === user.id);
-    const myAddresses = (state.addresses || []).filter((a) => a.user_id === user.id);
-    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && (r.user_id === user.id || r.reporter_name === user.name));
+    const user = state.currentUser || (state.currentUserId != null ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null) || state.users[0];
+    const myOrders = (state.orders || []).filter((o) => String(o.user_id) === String(user.id));
+    const myAddresses = (state.addresses || []).filter((a) => String(a.user_id) === String(user.id));
+    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && (String(r.user_id) === String(user.id) || r.reporter_name === user.name));
     const myCollectedCoupons = (state.collectedCoupons || []).map((id) => state.coupons.find((c) => c.id === id && c.is_active)).filter(Boolean);
 
     return `
@@ -10900,7 +10914,10 @@
      ========================================================================= */
 
   function renderRiderView(subTab = 'dashboard') {
-    const rider = state.riders[0] || { id: 1, name: 'Tareq Ahmed', phone: '01711223388', vehicle: 'Motorcycle', zone: 'Dhaka Metro', status: 'active' };
+    const curRiderUser = state.currentUser;
+    const rider = (state.riders || []).find((r) => String(r.user_id) === String(curRiderUser?.id) || (curRiderUser && r.name === curRiderUser.name)) ||
+                  state.riders[0] ||
+                  { id: curRiderUser?.id || 1, name: curRiderUser?.name || 'Tareq Ahmed', phone: curRiderUser?.phone || '01711223388', vehicle_type: 'Motorcycle', hub: 'Dhaka Metro', status: 'active' };
     const assigned = [];
     const availablePool = [];
 

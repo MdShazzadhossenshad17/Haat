@@ -116,8 +116,9 @@ if ($method === 'GET') {
     $whereStr = 'WHERE ' . implode(' AND ', $where);
 
     $stmt = $db->prepare(
-        "SELECT s.id, s.store_name, s.store_slug, s.description,
-                s.district, s.division, s.latitude, s.longitude $distCol
+        "SELECT s.id, s.user_id, s.store_name, s.store_slug, s.description,
+                s.address, s.district, s.division, s.status, s.is_published,
+                s.latitude, s.longitude $distCol
          FROM stores s
          $whereStr
          $orderBy
@@ -167,8 +168,8 @@ if ($method === 'POST') {
     $stmt = $db->prepare(
         'INSERT INTO stores (user_id, store_name, store_slug, description,
           logo, logo_mime_type, banner, banner_mime_type,
-          address, district, division, postal_code, latitude, longitude)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          address, district, division, postal_code, latitude, longitude, status, is_published)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $stmt->execute([
         $user['id'], $name, $slug,
@@ -180,11 +181,12 @@ if ($method === 'POST') {
         $_POST['postal_code'] ?? body('postal_code'),
         $_POST['latitude']    ?? body('latitude'),
         $_POST['longitude']   ?? body('longitude'),
+        'approved', 1
     ]);
     $newId = (int) $db->lastInsertId();
     $_SESSION['store_id'] = $newId;
 
-    json_ok(['message' => 'Store created — pending admin approval', 'id' => $newId, 'slug' => $slug], 201);
+    json_ok(['message' => 'Store created successfully', 'id' => $newId, 'slug' => $slug], 201);
 }
 
 // ─────────────────────────────────────────────────────────

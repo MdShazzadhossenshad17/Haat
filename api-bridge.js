@@ -1,8 +1,13 @@
 /**
- * HAAT! API Bridge v2
- * - Syncs app.js ↔ PHP REST API ↔ MySQL
- * - Fixes product image display (keeps Unsplash URLs from mock data)
- * - Adds auto-sliding carousel to Featured Products & Popular Stores
+ * HAAT! API Bridge v3
+ * - Full Dynamic Synchronization between Frontend (app.js) ↔ PHP REST API ↔ MySQL
+ * - Multi-Role Authentication (Seller, Customer, Rider, Admin, HATEX)
+ * - Automatic Seller Store Creation & Resolution
+ * - Automatic Rider Delivery Queue & Profile Resolution
+ * - Seller Order Status Sync to MySQL (PUT /api/seller_orders.php)
+ * - Customer Orders, Wishlist & Address Sync to MySQL
+ * - Seller Product Creation Sync to MySQL (POST /api/products.php)
+ * - Auto-sliding carousel for Featured Products & Popular Stores
  */
 
 (function () {
@@ -24,6 +29,8 @@
   }
   const apiGet  = ep => api(ep, { method: 'GET' });
   const apiPost = (ep, b) => api(ep, { method: 'POST', body: JSON.stringify(b) });
+  const apiPut  = (ep, b) => api(ep, { method: 'PUT',  body: JSON.stringify(b) });
+  const apiDel  = ep => api(ep, { method: 'DELETE' });
 
   /* ── Wait for app.js to finish initialising ─────────────────────────────── */
   function onAppReady(cb) {
@@ -32,14 +39,13 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     SECTION 1 — SLIDER STYLES (inject once)
+     SECTION 1 — SLIDER STYLES
      ═══════════════════════════════════════════════════════════════════════════ */
   function injectSliderCSS() {
     if (document.getElementById('haat-slider-css')) return;
     const s = document.createElement('style');
     s.id = 'haat-slider-css';
     s.textContent = `
-      /* ── shared slider shell ── */
       .haat-slider-shell {
         position: relative;
         overflow: hidden;
@@ -50,21 +56,18 @@
         transition: transform .45s cubic-bezier(.4,0,.2,1);
         will-change: transform;
       }
-      /* Product slider — 4.5 visible cards */
       .haat-prod-slide {
         flex: 0 0 calc(100% / 4.5);
         min-width: calc(100% / 4.5);
         padding-right: 14px;
         box-sizing: border-box;
       }
-      /* Store slider — 3.5 visible cards */
       .haat-store-slide {
         flex: 0 0 calc(100% / 3.5);
         min-width: calc(100% / 3.5);
         padding-right: 16px;
         box-sizing: border-box;
       }
-      /* ── arrow buttons — invisible by default, fade in on slider hover ── */
       .haat-sl-btn {
         position: absolute;
         top: 50%; transform: translateY(-50%);
@@ -82,7 +85,6 @@
         pointer-events: none;
         transition: opacity .25s ease, background .2s, transform .2s;
       }
-      /* Reveal arrows only when hovering the whole slider */
       .haat-slider-shell:hover .haat-sl-btn {
         opacity: 1;
         pointer-events: auto;
@@ -90,7 +92,6 @@
       .haat-sl-btn:hover { background: #F85606; color: #fff; transform: translateY(-50%) scale(1.08); }
       .haat-sl-prev { left: -4px; }
       .haat-sl-next { right: -4px; }
-      /* ── dots ── */
       .haat-sl-dots {
         display: flex; justify-content: center; gap: 6px; margin-top: 14px;
       }
@@ -101,7 +102,6 @@
         padding: 0;
       }
       .haat-sl-dot.active { background: #F85606; transform: scale(1.3); }
-      /* ── card in slider: fill their slot ── */
       .haat-prod-slide .haat-item-card,
       .haat-store-slide .haat-item-card {
         width: 100% !important;
@@ -120,19 +120,13 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     SECTION 2 — BUILD A SLIDER FROM AN EXISTING GRID
-     ═══════════════════════════════════════════════════════════════════════════
-     grid       — the existing DOM node containing the cards
-     slideClass — CSS class to give each slide wrapper
-     visibleCount — how many cards are visible at once (for dot count)
-     intervalMs — auto-advance milliseconds
-  ═══════════════════════════════════════════════════════════════════════════ */
+     SECTION 2 — SLIDER BUILDER
+     ═══════════════════════════════════════════════════════════════════════════ */
   function buildSlider(grid, slideClass, visibleCount, intervalMs) {
     if (!grid || grid.dataset.sliderDone === '1') return;
     const cards = [...grid.children];
     if (cards.length <= visibleCount) { grid.dataset.sliderDone = '1'; return; }
 
-    /* Wrap each card in a slide div */
     const track = document.createElement('div');
     track.className = 'haat-slider-track';
     cards.forEach(card => {
@@ -142,12 +136,10 @@
       track.appendChild(slide);
     });
 
-    /* Shell */
     const shell = document.createElement('div');
     shell.className = 'haat-slider-shell';
     shell.appendChild(track);
 
-    /* Arrows */
     const prev = document.createElement('button');
     prev.className = 'haat-sl-btn haat-sl-prev';
     prev.innerHTML = '<i class="bi bi-chevron-left"></i>';
@@ -161,7 +153,6 @@
     shell.appendChild(prev);
     shell.appendChild(next);
 
-    /* Dots */
     const totalSlides = cards.length;
     const dotsWrap = document.createElement('div');
     dotsWrap.className = 'haat-sl-dots';
@@ -175,7 +166,6 @@
       dotsWrap.appendChild(d);
     }
 
-    /* State */
     let current = 0;
     const maxIdx = totalSlides - Math.floor(visibleCount);
 
@@ -188,28 +178,20 @@
 
     prev.addEventListener('click', () => { goTo(current - 1); resetTimer(); });
     next.addEventListener('click', () => { goTo(current + 1); resetTimer(); });
-
-    /* Recalculate on resize */
     window.addEventListener('resize', () => goTo(current));
 
-    /* Auto advance */
     let timer = setInterval(() => goTo(current + 1 > maxIdx ? 0 : current + 1), intervalMs);
     function resetTimer() { clearInterval(timer); timer = setInterval(() => goTo(current + 1 > maxIdx ? 0 : current + 1), intervalMs); }
 
-    /* Pause on hover */
     shell.addEventListener('mouseenter', () => clearInterval(timer));
     shell.addEventListener('mouseleave', () => { timer = setInterval(() => goTo(current + 1 > maxIdx ? 0 : current + 1), intervalMs); });
 
-    /* Swap grid with shell + dots */
     grid.parentNode.insertBefore(shell, grid);
     grid.parentNode.insertBefore(dotsWrap, grid);
     grid.remove();
     grid.dataset.sliderDone = '1';
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
-     SECTION 3 — PATCH render() TO ALSO RUN POST-RENDER HOOK
-     ═══════════════════════════════════════════════════════════════════════════ */
   function patchRender() {
     const _origRender = window.render;
     window.render = function () {
@@ -219,21 +201,15 @@
   }
 
   function postRender() {
-    /* Only on home page */
     const hash = location.hash || '#/';
     const isHome = hash === '#/' || hash === '' || hash === '#';
     if (!isHome) return;
 
     injectSliderCSS();
 
-    /* ── Featured Products slider ───────────────────────────────────────── */
     const prodGrid = document.querySelector('.marketplace-product-grid');
-    if (prodGrid) {
-      buildSlider(prodGrid, 'haat-prod-slide', 4.5, 3500);
-    }
+    if (prodGrid) buildSlider(prodGrid, 'haat-prod-slide', 4.5, 3500);
 
-    /* ── Popular Stores slider ──────────────────────────────────────────── */
-    /* The stores grid uses an inline style, no class — find it via section heading */
     const sections = [...document.querySelectorAll('.section-block')];
     for (const sec of sections) {
       const h2 = sec.querySelector('h2');
@@ -246,10 +222,103 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     SECTION 4 — AUTH BRIDGE
+     SECTION 3 — DYNAMIC DATA SYNC HELPERS (MySQL ↔ State)
+     ═══════════════════════════════════════════════════════════════════════════ */
+  async function syncCustomerOrders(userId) {
+    const r = await apiGet('/orders.php');
+    if (r.ok && Array.isArray(r.data.orders) && r.data.orders.length) {
+      for (const summary of r.data.orders) {
+        const detail = await apiGet(`/orders.php?id=${summary.id}`);
+        if (detail.ok && detail.data.id) {
+          const fullOrder = detail.data;
+          const idx = (window.state.orders || []).findIndex(o => String(o.id) === String(fullOrder.id));
+          if (idx >= 0) window.state.orders[idx] = { ...window.state.orders[idx], ...fullOrder };
+          else window.state.orders.unshift(fullOrder);
+        }
+      }
+      if (window.persist) window.persist();
+    }
+  }
+
+  async function syncSellerOrders(storeId) {
+    const r = await apiGet('/seller_orders.php');
+    if (r.ok && Array.isArray(r.data.seller_orders) && r.data.seller_orders.length) {
+      for (const so of r.data.seller_orders) {
+        const detail = await apiGet(`/seller_orders.php?id=${so.id}`);
+        if (detail.ok && detail.data.id) {
+          const fullSo = detail.data;
+          let parent = (window.state.orders || []).find(o => String(o.id) === String(fullSo.order_id));
+          if (parent) {
+            if (!Array.isArray(parent.seller_orders)) parent.seller_orders = [];
+            const soIdx = parent.seller_orders.findIndex(s => String(s.id) === String(fullSo.id));
+            if (soIdx >= 0) parent.seller_orders[soIdx] = fullSo;
+            else parent.seller_orders.push(fullSo);
+          } else {
+            const newOrder = {
+              id: fullSo.order_id,
+              order_number: fullSo.order_number,
+              user_id: fullSo.user_id || 1,
+              shipping_name: fullSo.shipping_name,
+              shipping_phone: fullSo.shipping_phone,
+              shipping_address: fullSo.shipping_address,
+              district: fullSo.district,
+              division: fullSo.division,
+              postal_code: fullSo.postal_code,
+              order_status: fullSo.status,
+              total_amount: fullSo.subtotal,
+              shipping_cost: fullSo.shipping_cost || 60,
+              grand_total: fullSo.seller_total,
+              seller_orders: [fullSo],
+              created_at: fullSo.created_at
+            };
+            window.state.orders.unshift(newOrder);
+          }
+        }
+      }
+      if (window.persist) window.persist();
+    }
+  }
+
+  async function syncWishlist(userId) {
+    const r = await apiGet('/wishlists.php');
+    if (r.ok && Array.isArray(r.data)) {
+      const pids = r.data.map(w => Number(w.product_id));
+      if (!window.state.wishlistByUser) window.state.wishlistByUser = {};
+      window.state.wishlistByUser[String(userId)] = pids;
+      if (window.persist) window.persist();
+    }
+  }
+
+  async function syncAddresses(userId) {
+    const r = await apiGet('/addresses.php');
+    if (r.ok && Array.isArray(r.data) && r.data.length) {
+      const apiAddrs = r.data.map(a => ({
+        id: a.id,
+        user_id: userId,
+        label: a.label || 'Home',
+        name: a.name,
+        phone: a.phone,
+        address: a.address,
+        district: a.district,
+        division: a.division,
+        postal_code: a.postal_code || '1205',
+        latitude: parseFloat(a.latitude) || 23.75,
+        longitude: parseFloat(a.longitude) || 90.38,
+        is_default: parseInt(a.is_default) || 0
+      }));
+      window.state.addresses = [
+        ...apiAddrs,
+        ...(window.state.addresses || []).filter(a => String(a.user_id) !== String(userId))
+      ];
+      if (window.persist) window.persist();
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SECTION 4 — AUTH & MULTI-ROLE BRIDGE
      ═══════════════════════════════════════════════════════════════════════════ */
   function patchAuth() {
-    /* Login */
+    /* ── Login ── */
     const _origLogin = window.handleAuthLogin;
     window.handleAuthLogin = async function (form) {
       const fd = new FormData(form);
@@ -257,7 +326,7 @@
       const password = (fd.get('password') || '').trim();
 
       if (!email || !password) {
-        _origLogin.call(this, form);
+        if (typeof window.showToast === 'function') window.showToast('Please enter your email and password.', 'warning');
         return;
       }
 
@@ -270,26 +339,112 @@
 
       const r = await apiPost('/auth.php?action=login', { email, password: apiPw });
       if (r.ok && r.data.user) {
-        localStorage.setItem('HAAT_API_USER_ID', r.data.user.id);
-        localStorage.setItem('HAAT_API_ROLE',    r.data.user.role);
-        localStorage.setItem('HAAT_PW_' + email, password);
         const u = r.data.user;
-        let existing = window.state.users.find(x => x.email.toLowerCase() === email);
-        if (!existing) {
-          existing = { id: u.id, name: u.name, email: u.email, role: u.role, phone: '', password: password, status: 'active' };
-          window.state.users.push(existing);
-        } else {
-          existing.id = u.id;
-          existing.password = password;
+        const st = r.data.store;
+        const rd = r.data.rider;
+
+        localStorage.setItem('HAAT_API_USER_ID', String(u.id));
+        localStorage.setItem('HAAT_API_ROLE', u.role);
+        localStorage.setItem('HAAT_PW_' + email, password);
+
+        // Upsert user in window.state.users
+        const existingIdx = window.state.users.findIndex(x => String(x.id) === String(u.id) || x.email.toLowerCase() === email);
+        const userObj = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || (localUser?.phone || ''),
+          role: u.role,
+          password: password,
+          status: 'active',
+          store_id: st ? st.id : (u.store_id || null)
+        };
+        if (existingIdx >= 0) window.state.users[existingIdx] = userObj;
+        else window.state.users.push(userObj);
+
+        // Upsert store if seller
+        if (st) {
+          const storeIdx = window.state.stores.findIndex(s => String(s.id) === String(st.id) || String(s.user_id) === String(u.id));
+          const storeObj = {
+            id: st.id,
+            user_id: u.id,
+            store_name: st.store_name,
+            store_slug: st.store_slug,
+            description: st.description || `Official HAAT merchant store.`,
+            logo_text: st.store_name.slice(0, 3).toUpperCase(),
+            primary_color: '#F85606',
+            banner_gradient: 'linear-gradient(135deg, #F85606 0%, #7C2D12 100%)',
+            address: st.address || 'Dhaka',
+            district: st.district || 'Dhaka',
+            division: st.division || 'Dhaka',
+            postal_code: '1205',
+            latitude: parseFloat(st.latitude) || 23.75,
+            longitude: parseFloat(st.longitude) || 90.39,
+            delivery_charge: 60,
+            free_delivery: 0,
+            auto_greeting: `Assalamu Alaikum! Welcome to ${st.store_name}.`,
+            status: 'active',
+            is_published: 1,
+            verification_status: 'verified'
+          };
+          if (storeIdx >= 0) window.state.stores[storeIdx] = { ...window.state.stores[storeIdx], ...storeObj };
+          else window.state.stores.push(storeObj);
         }
-        window.state.currentUserId = existing.id;
-        window.state.currentUser = existing;
-        window.state.activeRole = existing.role;
+
+        // Upsert rider if rider
+        if (rd) {
+          const riderIdx = window.state.riders.findIndex(r => String(r.id) === String(rd.id) || String(r.user_id) === String(u.id));
+          const riderObj = {
+            id: rd.id,
+            user_id: u.id,
+            name: u.name,
+            phone: u.phone || (rd.phone || ''),
+            vehicle_type: 'Motorcycle',
+            hub: 'Dhaka Metro',
+            status: 'active',
+            current_lat: 23.7800,
+            current_lon: 90.4100
+          };
+          if (riderIdx >= 0) window.state.riders[riderIdx] = { ...window.state.riders[riderIdx], ...riderObj };
+          else window.state.riders.push(riderObj);
+        }
+
+        window.state.activeRole = u.role;
+        window.state.currentUserId = u.id;
+        window.state.currentUser = userObj;
+        if (st) window.state.currentUser.name = st.store_name;
+        window.state.lastAuthEmail = u.email;
+        window.state.appliedCoupon = null;
+
+        // Fetch dynamic user data from DB
+        if (u.role === 'customer') {
+          syncCustomerOrders(u.id);
+          syncWishlist(u.id);
+          syncAddresses(u.id);
+        } else if (u.role === 'seller' && st) {
+          syncSellerOrders(st.id);
+        }
+
+        if (window.persist) window.persist();
+
+        if (typeof window.showToast === 'function') {
+          window.showToast(`Welcome back, ${u.name}!`, 'success');
+        }
+
+        if (u.role === 'seller') location.hash = '#/dash/seller';
+        else if (u.role === 'rider') location.hash = '#/dash/rider';
+        else if (u.role === 'admin') location.hash = '#/dash/admin';
+        else if (u.role === 'hatex' || u.role === 'logistics') location.hash = '#/dash/hatex';
+        else location.hash = '#/account';
+
+        if (typeof window.render === 'function') window.render();
+        return;
+      } else {
+        _origLogin.call(this, form);
       }
-      _origLogin.call(this, form);
     };
 
-    /* Register */
+    /* ── Register ── */
     const _origReg = window.handleAuthRegister;
     window.handleAuthRegister = async function (form) {
       const fd = new FormData(form);
@@ -297,46 +452,150 @@
       const password = (fd.get('password') || '').trim();
       const cpassword = (fd.get('cpassword') || '').trim();
       const name = (fd.get('name') || '').trim();
+      const phone = (fd.get('phone') || '').trim();
 
-      // Ensure given and confirm password match before calling API
-      if (!name || !email || !password || password.length < 6 || password !== cpassword) {
-        _origReg.call(this, form);
+      if (!name || !email) {
+        if (typeof window.showToast === 'function') window.showToast('Please provide your name and email address.', 'warning');
+        return;
+      }
+      if (!password || password.length < 6) {
+        if (typeof window.showToast === 'function') window.showToast('Password must be at least 6 characters long.', 'warning');
+        return;
+      }
+      if (password !== cpassword) {
+        if (typeof window.showToast === 'function') window.showToast('Passwords do not match. Please verify.', 'warning');
         return;
       }
 
       const regRole = window.state.registerRole || 'customer';
-      const r = await apiPost('/auth.php?action=register', {
+      const payload = {
         name,
         email,
-        phone: (fd.get('phone') || '').trim(),
+        phone,
         password,
-        role: (regRole === 'seller') ? 'seller' : 'customer',
-      });
+        role: regRole,
+      };
+
+      if (regRole === 'seller') {
+        payload.store_name = (fd.get('store_name') || `${name}'s Store`).trim();
+        payload.category = fd.get('category') || 'Fashion & Apparel';
+        payload.address = (fd.get('address') || 'Shop 8, New Market').trim();
+        payload.district = fd.get('district') || 'Dhaka';
+        payload.division = fd.get('district') || 'Dhaka';
+      } else if (regRole === 'customer') {
+        payload.address = (fd.get('address') || 'House 14, Road 3, Dhanmondi').trim();
+        payload.district = fd.get('district') || 'Dhaka';
+        payload.division = fd.get('division') || 'Dhaka';
+      } else if (regRole === 'rider') {
+        payload.vehicle_type = fd.get('vehicle_type') || 'Motorcycle';
+        payload.hub = fd.get('district') || 'Dhaka Metro';
+      }
+
+      const r = await apiPost('/auth.php?action=register', payload);
       if (r.ok && r.data.user) {
-        localStorage.setItem('HAAT_API_USER_ID', r.data.user.id);
-        localStorage.setItem('HAAT_API_ROLE',    r.data.user.role);
+        const u = r.data.user;
+        const st = r.data.store;
+        const rd = r.data.rider;
+
+        localStorage.setItem('HAAT_API_USER_ID', String(u.id));
+        localStorage.setItem('HAAT_API_ROLE', u.role);
         localStorage.setItem('HAAT_PW_' + email, password);
-        if (regRole === 'seller') {
-          const storeName = (fd.get('store_name') || name + "'s Store").trim();
-          await apiPost('/stores.php', { store_name: storeName }).catch(() => {});
+
+        const existingIdx = window.state.users.findIndex(x => String(x.id) === String(u.id) || x.email.toLowerCase() === email);
+        const newUserObj = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || phone,
+          role: u.role,
+          password: password,
+          status: 'active',
+          store_id: st ? st.id : null
+        };
+        if (existingIdx >= 0) window.state.users[existingIdx] = newUserObj;
+        else window.state.users.push(newUserObj);
+
+        if (st) {
+          const storeIdx = window.state.stores.findIndex(s => String(s.id) === String(st.id) || String(s.user_id) === String(u.id));
+          const newStoreObj = {
+            id: st.id,
+            user_id: u.id,
+            store_name: st.store_name,
+            store_slug: st.store_slug,
+            description: st.description || `Official HAAT merchant store.`,
+            logo_text: st.store_name.slice(0, 3).toUpperCase(),
+            primary_color: '#F85606',
+            banner_gradient: 'linear-gradient(135deg, #F85606 0%, #7C2D12 100%)',
+            address: st.address || payload.address,
+            district: st.district || payload.district,
+            division: st.division || payload.division,
+            postal_code: '1205',
+            latitude: 23.7500,
+            longitude: 90.3900,
+            delivery_charge: 60,
+            free_delivery: 0,
+            auto_greeting: `Assalamu Alaikum! Welcome to ${st.store_name}.`,
+            status: 'active',
+            is_published: 1,
+            verification_status: 'unverified'
+          };
+          if (storeIdx >= 0) window.state.stores[storeIdx] = newStoreObj;
+          else window.state.stores.push(newStoreObj);
         }
-        _origReg.call(this, form);
-        if (window.state.currentUser) {
-          window.state.currentUser.id = r.data.user.id;
-          window.state.currentUserId = r.data.user.id;
-          if (window.persist) window.persist();
+
+        if (rd) {
+          const riderIdx = window.state.riders.findIndex(r => String(r.id) === String(rd.id) || String(r.user_id) === String(u.id));
+          const newRiderObj = {
+            id: rd.id,
+            user_id: u.id,
+            name: u.name,
+            phone: u.phone || phone,
+            vehicle_type: payload.vehicle_type || 'Motorcycle',
+            hub: payload.hub || 'Dhaka Metro',
+            status: 'active',
+            current_lat: 23.7800,
+            current_lon: 90.4100
+          };
+          if (riderIdx >= 0) window.state.riders[riderIdx] = newRiderObj;
+          else window.state.riders.push(newRiderObj);
         }
+
+        window.state.activeRole = u.role;
+        window.state.currentUserId = u.id;
+        window.state.currentUser = newUserObj;
+        if (st) window.state.currentUser.name = st.store_name;
+
+        if (!window.state.collectedCouponsByUser) window.state.collectedCouponsByUser = {};
+        window.state.collectedCouponsByUser[String(u.id)] = [];
+        if (!window.state.cartByUser) window.state.cartByUser = {};
+        window.state.cartByUser[String(u.id)] = [];
+        if (!window.state.wishlistByUser) window.state.wishlistByUser = {};
+        window.state.wishlistByUser[String(u.id)] = [];
+
+        if (window.persist) window.persist();
+
+        if (typeof window.showToast === 'function') {
+          if (u.role === 'seller') window.showToast(`Store "${st ? st.store_name : u.name}" is now active and open!`, 'success');
+          else window.showToast(`Welcome to HAAT, ${u.name}! Account registered.`, 'success');
+        }
+
+        if (u.role === 'seller') location.hash = '#/dash/seller';
+        else if (u.role === 'rider') location.hash = '#/dash/rider';
+        else location.hash = '#/account';
+
+        if (typeof window.render === 'function') window.render();
         return;
       } else if (r.status === 409) {
         if (typeof window.showToast === 'function') {
           window.showToast('An account with this email address already exists. Please log in.', 'warning');
         }
         return;
+      } else {
+        _origReg.call(this, form);
       }
-      _origReg.call(this, form);
     };
 
-    /* Logout */
+    /* ── Logout ── */
     const _origOut = window.handleLogout;
     window.handleLogout = async function () {
       await apiPost('/auth.php?action=logout', {}).catch(() => {});
@@ -347,7 +606,7 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     SECTION 5 — CART & ORDER BRIDGE
+     SECTION 5 — CART, CHECKOUT, SELLER STATUS & WISHLIST BRIDGE
      ═══════════════════════════════════════════════════════════════════════════ */
   function patchCartOrder() {
     /* Add to cart */
@@ -355,8 +614,12 @@
     window.addToCartDirect = function (productId, qty, variantName, variantVal) {
       _origCart.call(this, productId, qty, variantName, variantVal);
       if (localStorage.getItem('HAAT_API_USER_ID')) {
-        apiPost('/cart.php', { product_id: productId, quantity: qty || 1,
-          variant_name: variantName || null, variant_value: variantVal || null }).catch(() => {});
+        apiPost('/cart.php', {
+          product_id: productId,
+          quantity: qty || 1,
+          variant_name: variantName || null,
+          variant_value: variantVal || null
+        }).catch(() => {});
       }
     };
     window.addToCart = window.addToCartDirect;
@@ -370,7 +633,7 @@
         if (!apiUserId) return;
         const cart = window.state.cart || [];
         if (!cart.length) return;
-        const addr = (window.state.addresses || []).find(a => a.user_id === parseInt(apiUserId) && a.is_default) || {};
+        const addr = (window.state.addresses || []).find(a => String(a.user_id) === String(apiUserId) && a.is_default) || {};
         await apiPost('/orders.php', {
           payment_method:   window.state.selectedPaymentMethod || 'cash_on_delivery',
           shipping_name:    addr.name     || window.state.currentUser?.name || '',
@@ -380,17 +643,82 @@
           division:         addr.division || 'Dhaka',
           postal_code:      addr.postal_code || '',
           items: cart.map(c => ({
-            product_id: c.product_id, quantity: c.quantity || 1,
-            variant_name: c.variant_name || null, variant_value: c.variant_value || null,
+            product_id: c.product_id,
+            quantity: c.quantity || 1,
+            variant_name: c.variant_name || null,
+            variant_value: c.variant_value || null,
           })),
         }).catch(() => {});
+      };
+    }
+
+    /* Seller Order Status Updates → Sync to MySQL */
+    const _origUpdateStatus = window.updateSellerOrderStatus;
+    if (_origUpdateStatus) {
+      window.updateSellerOrderStatus = function (sellerOrderId, newStatus) {
+        const sId = Number(sellerOrderId);
+        let statusVal = newStatus;
+        if (!statusVal) {
+          const selectEl = document.getElementById(`sellerStatusSelect_${sId}`);
+          if (selectEl) statusVal = selectEl.value;
+        }
+        _origUpdateStatus.call(this, sellerOrderId, newStatus);
+        if (statusVal && ['pending', 'order_accepted', 'processing', 'packaged'].includes(statusVal)) {
+          apiPut(`/seller_orders.php?id=${sId}`, { status: statusVal }).catch(() => {});
+        }
+      };
+    }
+
+    /* Wishlist Toggle → Sync to MySQL */
+    const _origWish = window.toggleWishlist;
+    if (_origWish) {
+      window.toggleWishlist = function (productId) {
+        const pid = Number(productId);
+        const wasInWish = (window.state.wishlist || []).includes(pid);
+        _origWish.call(this, productId);
+        if (window.state.activeRole === 'customer' && localStorage.getItem('HAAT_API_USER_ID')) {
+          if (wasInWish) {
+            apiDel(`/wishlists.php?product_id=${pid}`).catch(() => {});
+          } else {
+            apiPost('/wishlists.php', { product_id: pid }).catch(() => {});
+          }
+        }
+      };
+    }
+
+    /* Seller Product Creation → Sync to MySQL */
+    const _origAddProd = window.handleAddProduct;
+    if (_origAddProd) {
+      window.handleAddProduct = async function (form) {
+        const fd = new FormData(form);
+        const store = typeof window.getSellerOwnStore === 'function' ? window.getSellerOwnStore() : window.state.stores[0];
+        _origAddProd.call(this, form);
+
+        if (store && store.id) {
+          const prodData = {
+            store_id: store.id,
+            name: fd.get('name'),
+            price: parseFloat(fd.get('price')),
+            sale_price: parseFloat(fd.get('sale_price')) || null,
+            sku: fd.get('sku'),
+            subcategory_id: Number(fd.get('subcategory_id') || 101),
+            description: 'Verified merchant product in HAAT catalogue.'
+          };
+          const r = await apiPost('/products.php', prodData);
+          if (r.ok && r.data.id) {
+            const added = window.state.products[window.state.products.length - 1];
+            if (added && added.name === prodData.name) {
+              added.id = r.data.id;
+              if (window.persist) window.persist();
+            }
+          }
+        }
       };
     }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
      SECTION 6 — LOAD REAL DATA FROM API → MERGE INTO state
-     Preserves existing Unsplash images — only adds NEW products from DB
      ═══════════════════════════════════════════════════════════════════════════ */
   async function loadApiData() {
     const ping = await apiGet('/auth.php?action=check');
@@ -400,7 +728,6 @@
     }
 
     const st = window.state;
-    /* Save original products (with Unsplash images) keyed by id */
     const origByid = {};
     (st.products || []).forEach(p => { origByid[p.id] = p; });
 
@@ -417,11 +744,11 @@
     const brands = await apiGet('/brands.php');
     if (brands.ok && Array.isArray(brands.data) && brands.data.length) st.brands = brands.data;
 
-    /* Stores */
+    /* Stores — include user_id */
     const stores = await apiGet('/stores.php');
     if (stores.ok && stores.data.stores?.length) {
       const fallbackColors = ['#1E4332','#0284C7','#15803D','#B45309','#F85606'];
-      st.stores = stores.data.stores.map(s => {
+      const dbStores = stores.data.stores.map(s => {
         const col = fallbackColors[s.id % fallbackColors.length] || '#1E4332';
         return {
           id: s.id, user_id: s.user_id,
@@ -441,6 +768,11 @@
           verification_status: s.verification_status || 'unverified',
         };
       });
+
+      // Merge DB stores while preserving any local store with user_id
+      const dbStoreIds = new Set(dbStores.map(x => x.id));
+      const localOnly = (st.stores || []).filter(x => !dbStoreIds.has(x.id));
+      st.stores = [...dbStores, ...localOnly];
     }
 
     /* Products — KEEP original images if they are real URLs */
@@ -448,7 +780,6 @@
     if (prods.ok && prods.data.products?.length) {
       st.products = prods.data.products.map(p => {
         const orig = origByid[p.id];
-        /* Use Unsplash URLs from mock data if available; fall back to placeholder */
         const img1 = (orig?.image_1 && !orig.image_1.includes('images.php')) ? orig.image_1 : (p.image_1_url || '');
         const img2 = (orig?.image_2 && !orig.image_2.includes('images.php')) ? orig.image_2 : (p.image_2_url || '');
         const img3 = (orig?.image_3 && !orig.image_3.includes('images.php')) ? orig.image_3 : (p.image_3_url || '');
@@ -475,7 +806,88 @@
       });
     }
 
-    /* If logged in, load user-specific data */
+    /* Session check — if logged in on server, sync user and related data */
+    if (ping.ok && ping.data.logged_in && ping.data.user) {
+      const u = ping.data.user;
+      const stRow = ping.data.store;
+      const rdRow = ping.data.rider;
+
+      localStorage.setItem('HAAT_API_USER_ID', String(u.id));
+      localStorage.setItem('HAAT_API_ROLE', u.role);
+
+      const existingIdx = st.users.findIndex(x => String(x.id) === String(u.id) || x.email.toLowerCase() === u.email.toLowerCase());
+      const userObj = {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone || '',
+        role: u.role,
+        status: 'active',
+        store_id: stRow ? stRow.id : (u.store_id || null)
+      };
+      if (existingIdx >= 0) st.users[existingIdx] = { ...st.users[existingIdx], ...userObj };
+      else st.users.push(userObj);
+
+      if (stRow) {
+        const sIdx = st.stores.findIndex(s => String(s.id) === String(stRow.id) || String(s.user_id) === String(u.id));
+        const sObj = {
+          id: stRow.id,
+          user_id: u.id,
+          store_name: stRow.store_name,
+          store_slug: stRow.store_slug,
+          description: stRow.description || 'Official HAAT merchant store.',
+          logo_text: stRow.store_name.slice(0, 3).toUpperCase(),
+          primary_color: '#F85606',
+          banner_gradient: 'linear-gradient(135deg, #F85606 0%, #7C2D12 100%)',
+          address: stRow.address || 'Dhaka',
+          district: stRow.district || 'Dhaka',
+          division: stRow.division || 'Dhaka',
+          postal_code: '1205',
+          latitude: parseFloat(stRow.latitude) || 23.75,
+          longitude: parseFloat(stRow.longitude) || 90.39,
+          delivery_charge: 60,
+          free_delivery: 0,
+          auto_greeting: `Assalamu Alaikum! Welcome to ${stRow.store_name}.`,
+          status: 'active',
+          is_published: 1,
+          verification_status: 'verified'
+        };
+        if (sIdx >= 0) st.stores[sIdx] = { ...st.stores[sIdx], ...sObj };
+        else st.stores.push(sObj);
+      }
+
+      if (rdRow) {
+        const rIdx = st.riders.findIndex(r => String(r.id) === String(rdRow.id) || String(r.user_id) === String(u.id));
+        const rObj = {
+          id: rdRow.id,
+          user_id: u.id,
+          name: u.name,
+          phone: u.phone || (rdRow.phone || ''),
+          vehicle_type: 'Motorcycle',
+          hub: 'Dhaka Metro',
+          status: 'active',
+          current_lat: 23.7800,
+          current_lon: 90.4100
+        };
+        if (rIdx >= 0) st.riders[rIdx] = { ...st.riders[rIdx], ...rObj };
+        else st.riders.push(rObj);
+      }
+
+      st.activeRole = u.role;
+      st.currentUserId = u.id;
+      st.currentUser = userObj;
+      if (stRow) st.currentUser.name = stRow.store_name;
+
+      if (u.role === 'customer') {
+        syncCustomerOrders(u.id);
+        syncWishlist(u.id);
+        syncAddresses(u.id);
+      } else if (u.role === 'seller' && stRow) {
+        syncSellerOrders(stRow.id);
+      }
+    }
+
+    /* Notifications */
     const apiUserId = localStorage.getItem('HAAT_API_USER_ID');
     if (apiUserId) {
       const notifs = await apiGet('/notifications.php?limit=20');
@@ -492,7 +904,6 @@
       }
     }
 
-    /* Re-render with fresh API data */
     try { window.render(); } catch (_) {}
     try { window.updateGlobalHeader(); } catch (_) {}
   }
@@ -506,19 +917,21 @@
     patchCartOrder();
     patchRender();
 
-    /* First-run: load API data, then sliders fire via the patched render() */
     loadApiData().catch(() => {
-      /* API down — still run sliders on current state */
       requestAnimationFrame(postRender);
     });
   });
 
   window.haatApiSync = {
-    saveProduct: (p) => p.id && api(`/products.php?id=${p.id}`, { method: 'PUT', body: JSON.stringify(p) }).catch(() => {}),
-    saveOrder:   (o) => o.id && api(`/orders.php?id=${o.id}`,   { method: 'PUT', body: JSON.stringify({ order_status: o.order_status }) }).catch(() => {}),
-    saveInventory: (pid, qty) => api(`/inventory.php?product_id=${pid}`, { method: 'PUT', body: JSON.stringify({ quantity: qty }) }).catch(() => {}),
+    saveProduct: (p) => p.id && apiPut(`/products.php?id=${p.id}`, p).catch(() => {}),
+    saveOrder:   (o) => o.id && apiPut(`/orders.php?id=${o.id}`, { order_status: o.order_status }).catch(() => {}),
+    saveInventory: (pid, qty) => apiPut(`/inventory.php?product_id=${pid}`, { quantity: qty }).catch(() => {}),
+    syncCustomerOrders,
+    syncSellerOrders,
+    syncWishlist,
+    syncAddresses
   };
 
-  console.info('[HAAT Bridge] v2 loaded — images fixed, sliders active, API connected');
+  console.info('[HAAT Bridge] v3 loaded — dynamic MySQL integration active');
 
 })();

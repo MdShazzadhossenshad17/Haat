@@ -208,9 +208,10 @@ if ($method === 'POST') {
     $sid  = $user['store_id'];
     if (!$sid) json_error('No store found — create a store first', 403);
 
-    $name      = trim($_POST['name'] ?? '');
-    $subcatId  = (int) ($_POST['subcategory_id'] ?? 0);
-    $price     = (float) ($_POST['price'] ?? 0);
+    $b         = get_body();
+    $name      = trim($_POST['name'] ?? body('name', ''));
+    $subcatId  = (int) ($_POST['subcategory_id'] ?? body('subcategory_id', 1));
+    $price     = (float) ($_POST['price'] ?? body('price', 0));
 
     if (!$name || !$subcatId || !$price) {
         json_error('name, subcategory_id, and price are required', 422);
@@ -222,7 +223,7 @@ if ($method === 'POST') {
     $chk->execute([$slug]);
     if ($chk->fetch()) $slug .= '-' . time();
 
-    $sku = $_POST['sku'] ?? 'SKU-' . strtoupper(bin2hex(random_bytes(4)));
+    $sku = $_POST['sku'] ?? body('sku', 'SKU-' . strtoupper(bin2hex(random_bytes(4))));
 
     // Images
     $img = [];
@@ -249,12 +250,12 @@ if ($method === 'POST') {
     );
     $stmt->execute([
         $sid, $subcatId,
-        $_POST['brand_id']        ?? null,
-        $_POST['collection_id']   ?? null,
+        $_POST['brand_id']        ?? body('brand_id', null),
+        $_POST['collection_id']   ?? body('collection_id', null),
         $name, $slug, $sku,
-        $_POST['description']     ?? null,
+        $_POST['description']     ?? body('description', null),
         $price,
-        $_POST['sale_price']      ?? null,
+        $_POST['sale_price']      ?? body('sale_price', null),
         $img['image_1'],  $img['image_1_mime'],
         $img['image_2'],  $img['image_2_mime'],
         $img['image_3'],  $img['image_3_mime'],

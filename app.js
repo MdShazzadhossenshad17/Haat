@@ -1238,6 +1238,9 @@
     messages: readStorage('messages', defaultMessages),
     notifications: readStorage('notifications', defaultNotifications),
     collectedCouponsByUser: readStorage('collectedCouponsByUser', {}),
+    // Per-user isolated cart and wishlist (every account is individual)
+    cartByUser: readStorage('cartByUser', {}),
+    wishlistByUser: readStorage('wishlistByUser', {}),
     greetedChannels: readStorage('greetedChannels', ['seller_1_order_1']),
 
     // Active session (null = Guest / Logged out)
@@ -1245,11 +1248,7 @@
     currentUserId: readStorage('currentUserId', null),
     currentUser: null,
     lastAuthEmail: readStorage('lastAuthEmail', ''),
-    cart: readStorage('cart', [
-      { product_id: 1, store_id: 1, quantity: 1, variant_name: 'Ivory White', variant_value: '42' },
-      { product_id: 3, store_id: 2, quantity: 1, variant_name: 'Midnight Black', variant_value: 'Standard' }
-    ]),
-    wishlist: readStorage('wishlist', [2, 5]),
+    // cart and wishlist are proxied below — do not add them here directly
 
     // View states
     appliedCoupon: readStorage('appliedCoupon', null),
@@ -1414,15 +1413,14 @@
     writeStorage('messages', state.messages);
     writeStorage('notifications', state.notifications);
     writeStorage('collectedCouponsByUser', state.collectedCouponsByUser);
-    writeStorage('collectedCoupons', state.collectedCoupons);
+    writeStorage('cartByUser', state.cartByUser);
+    writeStorage('wishlistByUser', state.wishlistByUser);
     writeStorage('greetedChannels', state.greetedChannels);
     writeStorage('appliedCoupon', state.appliedCoupon);
     writeStorage('appSettings', state.appSettings);
     writeStorage('activeRole', state.activeRole);
     writeStorage('currentUserId', state.currentUserId);
     writeStorage('lastAuthEmail', state.lastAuthEmail);
-    writeStorage('cart', state.cart);
-    writeStorage('wishlist', state.wishlist);
     updateGlobalHeader();
   }
 
@@ -1470,22 +1468,39 @@
   }
   resolveCurrentUser();
 
-  // Individual account coupons isolation (every account is individual)
+  // ===== PER-USER DATA ISOLATION =====
+  // Every account is individual — coupons, cart, wishlist are all isolated per user.
+
+  // Normalize dicts
   if (!state.collectedCouponsByUser || typeof state.collectedCouponsByUser !== 'object' || Array.isArray(state.collectedCouponsByUser)) {
     state.collectedCouponsByUser = {};
   }
+  if (!state.cartByUser || typeof state.cartByUser !== 'object' || Array.isArray(state.cartByUser)) {
+    state.cartByUser = {};
+  }
+  if (!state.wishlistByUser || typeof state.wishlistByUser !== 'object' || Array.isArray(state.wishlistByUser)) {
+    state.wishlistByUser = {};
+  }
+
+  // Migrate any legacy flat data into user-1 bucket for backwards-compat
   const legacyFlatCoupons = readStorage('collectedCoupons', null);
   if (Array.isArray(legacyFlatCoupons) && legacyFlatCoupons.length > 0 && Object.keys(state.collectedCouponsByUser).length === 0) {
     state.collectedCouponsByUser['1'] = legacyFlatCoupons;
   }
+  const legacyCart = readStorage('cart', null);
+  if (Array.isArray(legacyCart) && legacyCart.length > 0 && Object.keys(state.cartByUser).length === 0) {
+    state.cartByUser['1'] = legacyCart;
+  }
+  const legacyWishlist = readStorage('wishlist', null);
+  if (Array.isArray(legacyWishlist) && legacyWishlist.length > 0 && Object.keys(state.wishlistByUser).length === 0) {
+    state.wishlistByUser['1'] = legacyWishlist;
+  }
 
+  // ---- COUPON PROXY ----
   function getCurrentUserCollectedCouponIds() {
     if (!state.currentUser || state.activeRole !== 'customer') return [];
     const uid = String(state.currentUser.id);
-    if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
-    if (!Array.isArray(state.collectedCouponsByUser[uid])) {
-      state.collectedCouponsByUser[uid] = [];
-    }
+    if (!Array.isArray(state.collectedCouponsByUser[uid])) state.collectedCouponsByUser[uid] = [];
     return state.collectedCouponsByUser[uid];
   }
   window.getCurrentUserCollectedCouponIds = getCurrentUserCollectedCouponIds;
@@ -1496,19 +1511,51 @@
   }
   window.isCouponCollectedByCurrentUser = isCouponCollectedByCurrentUser;
 
-  // Dynamically proxy state.collectedCoupons to the currently active customer account
   Object.defineProperty(state, 'collectedCoupons', {
-    get() {
-      return getCurrentUserCollectedCouponIds();
-    },
+    get() { return getCurrentUserCollectedCouponIds(); },
     set(val) {
       if (!state.currentUser || state.activeRole !== 'customer') return;
       const uid = String(state.currentUser.id);
-      if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
       state.collectedCouponsByUser[uid] = Array.isArray(val) ? val : [];
     },
-    configurable: true,
-    enumerable: true
+    configurable: true, enumerable: true
+  });
+
+  // ---- CART PROXY (per-user isolation) ----
+  function getCurrentUserCartKey() {
+    if (!state.currentUser) return 'guest';
+    return String(state.currentUser.id);
+  }
+
+  function getCurrentUserCartArr() {
+    const k = getCurrentUserCartKey();
+    if (!Array.isArray(state.cartByUser[k])) state.cartByUser[k] = [];
+    return state.cartByUser[k];
+  }
+
+  Object.defineProperty(state, 'cart', {
+    get() { return getCurrentUserCartArr(); },
+    set(val) {
+      const k = getCurrentUserCartKey();
+      state.cartByUser[k] = Array.isArray(val) ? val : [];
+    },
+    configurable: true, enumerable: true
+  });
+
+  // ---- WISHLIST PROXY (per-user isolation) ----
+  function getCurrentUserWishlistArr() {
+    const k = getCurrentUserCartKey(); // reuse same user-key helper
+    if (!Array.isArray(state.wishlistByUser[k])) state.wishlistByUser[k] = [];
+    return state.wishlistByUser[k];
+  }
+
+  Object.defineProperty(state, 'wishlist', {
+    get() { return getCurrentUserWishlistArr(); },
+    set(val) {
+      const k = getCurrentUserCartKey();
+      state.wishlistByUser[k] = Array.isArray(val) ? val : [];
+    },
+    configurable: true, enumerable: true
   });
 
   function showToast(message, type = 'info') {

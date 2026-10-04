@@ -33,12 +33,27 @@ if ($method === 'GET') {
         json_ok($stmt->fetchAll());
     }
 
-    if (!$productId) json_error('product_id required', 422);
+    if (!$productId) {
+        $p = paginate(100);
+        $stmt = $db->prepare(
+            "SELECT r.id, r.product_id, r.user_id, r.rating, r.comment, r.created_at,
+                    u.name AS user_name, u.name AS reviewer_name,
+                    p.name AS product_name
+             FROM product_reviews r
+             JOIN users u ON u.id = r.user_id
+             JOIN products p ON p.id = r.product_id
+             ORDER BY r.created_at DESC
+             LIMIT {$p['limit']} OFFSET {$p['offset']}"
+        );
+        $stmt->execute();
+        $allReviews = $stmt->fetchAll();
+        json_ok(['reviews' => $allReviews, 'page' => $p['page']]);
+    }
 
     $p    = paginate(10);
     $stmt = $db->prepare(
         "SELECT r.id, r.rating, r.comment, r.created_at,
-                u.name AS reviewer_name
+                u.name AS reviewer_name, u.name AS user_name
          FROM product_reviews r
          JOIN users u ON u.id = r.user_id
          WHERE r.product_id = ?

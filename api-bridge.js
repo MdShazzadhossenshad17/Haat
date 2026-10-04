@@ -706,12 +706,33 @@
           };
           const r = await apiPost('/products.php', prodData);
           if (r.ok && r.data.id) {
-            const added = window.state.products[window.state.products.length - 1];
-            if (added && added.name === prodData.name) {
+            const added = window.state.products.find(p => p.name === prodData.name) || window.state.products[0];
+            if (added) {
               added.id = r.data.id;
               if (window.persist) window.persist();
             }
           }
+        }
+      };
+    }
+
+    /* Customer Review Submission — Sync to MySQL (POST /api/reviews.php) */
+    const _origSubmitRev = window.handleSubmitReview;
+    if (_origSubmitRev) {
+      window.handleSubmitReview = async function (form, productId) {
+        const fd = new FormData(form);
+        const rating = parseInt(fd.get('rating') || 5);
+        const comment = fd.get('comment') || '';
+        _origSubmitRev.call(this, form, productId);
+
+        try {
+          await apiPost('/reviews.php', {
+            product_id: productId,
+            rating: rating,
+            comment: comment
+          });
+        } catch (e) {
+          console.warn('[HAAT Bridge] Review API sync error:', e);
         }
       };
     }
@@ -798,8 +819,8 @@
           variant_2_value: p.variant_2_value || null,
           is_featured: parseInt(p.is_featured || orig?.is_featured || 0),
           is_flash_sale: parseInt(p.is_flash_sale || orig?.is_flash_sale || 0),
-          rating:       parseFloat(p.avg_rating   || orig?.rating || 0),
-          reviews_count:parseInt(p.review_count   || orig?.reviews_count || 0),
+          rating:       p.avg_rating != null ? parseFloat(p.avg_rating) : 0,
+          reviews_count:p.review_count != null ? parseInt(p.review_count) : 0,
           delivery_charge: orig?.delivery_charge ?? 60,
           free_delivery:   orig?.free_delivery   ?? 0,
         };
@@ -903,6 +924,26 @@
         st.notifications = [...apiNotifs, ...(st.notifications || []).filter(x => !existing.has(x.id))];
       }
     }
+
+    /* Product Reviews — Sync from MySQL */
+    try {
+      const revRes = await apiGet('/reviews.php?limit=100');
+      if (revRes.ok && Array.isArray(revRes.data?.reviews) && revRes.data.reviews.length) {
+        const apiRevs = revRes.data.reviews.map(r => ({
+          id: r.id,
+          product_id: r.product_id,
+          user_id: r.user_id,
+          user_name: r.user_name || r.reviewer_name || 'Verified Buyer',
+          rating: parseInt(r.rating || 5),
+          comment: r.comment || '',
+          order_number: '',
+          verified_purchase: 1,
+          created_at: (r.created_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+        }));
+        const apiRevIds = new Set(apiRevs.map(x => x.id));
+        st.reviews = [...apiRevs, ...(st.reviews || []).filter(x => !apiRevIds.has(x.id))];
+      }
+    } catch (_) {}
 
     try { window.render(); } catch (_) {}
     try { window.updateGlobalHeader(); } catch (_) {}

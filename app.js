@@ -3456,9 +3456,11 @@
             }
           </div>
           <div class="item-rating-row">
-            <span class="star-amber">★</span>
-            <strong>${p.rating || '4.8'}</strong>
-            <span>(${p.reviews_count || 12})</span>
+            ${
+              (p.reviews_count && Number(p.reviews_count) > 0 && p.rating && Number(p.rating) > 0)
+                ? `<span class="star-amber">★</span> <strong>${parseFloat(p.rating).toFixed(1)}</strong> <span>(${p.reviews_count})</span>`
+                : `<span style="color:#94A3B8;font-size:11px;"><i class="bi bi-star"></i> No reviews yet</span>`
+            }
             <span style="margin-left:auto;color:${isOut ? '#DC2626' : '#16A34A'};font-weight:700;">
               ${isOut ? 'Stock Out' : `${inv.available} In Stock`}
             </span>
@@ -4120,9 +4122,21 @@
           <div class="detail-middle-col">
             <h1>${esc(p.name)}</h1>
             <div class="ratings-meta-strip">
-              <span class="star-amber">★★★★★</span>
-              <strong>${p.rating || 4.8}</strong>
-              <span>(${reviews.length || 24} customer reviews)</span>
+              ${
+                reviews.length > 0
+                  ? (() => {
+                      const avg = (reviews.reduce((s, r) => s + Number(r.rating || 5), 0) / reviews.length).toFixed(1);
+                      const fullStars = Math.round(Number(avg));
+                      return `
+                        <span class="star-amber">${'★'.repeat(fullStars)}${'☆'.repeat(5 - fullStars)}</span>
+                        <strong>${avg}</strong>
+                        <span>(${reviews.length} customer review${reviews.length > 1 ? 's' : ''})</span>
+                      `;
+                    })()
+                  : `
+                    <span style="color:#94A3B8;font-size:12px;"><i class="bi bi-star"></i> No customer reviews yet</span>
+                  `
+              }
               <span>•</span>
               <span style="font-family:var(--font-mono);font-size:11px;">SKU: ${esc(p.sku)}</span>
             </div>
@@ -4249,7 +4263,14 @@
               </div>
               <div class="merchant-metrics-strip">
                 <div>
-                  <div class="merchant-metric-num">98.4%</div>
+                  <div class="merchant-metric-num">${(() => {
+                    const stProds = state.products.filter(pr => pr.store_id === store.id);
+                    const stProdIds = new Set(stProds.map(pr => pr.id));
+                    const stRevs = state.reviews.filter(r => stProdIds.has(r.product_id));
+                    if (!stRevs.length) return 'New Store';
+                    const pos = stRevs.filter(r => Number(r.rating) >= 4).length;
+                    return Math.round((pos / stRevs.length) * 100) + '%';
+                  })()}</div>
                   <div class="merchant-metric-lbl">Positive Feedback</div>
                 </div>
                 <div>
@@ -8429,9 +8450,9 @@
       image_3: preview3,
       variant_1_name: 'Color',
       variant_1_value: 'Standard',
-      is_featured: 1,
-      rating: 5.0,
-      reviews_count: 1
+      is_featured: 0,
+      rating: 0,
+      reviews_count: 0
     };
     state.products.unshift(newProd);
     state.inventory.push({
@@ -11493,18 +11514,29 @@
       return;
     }
     const fd = new FormData(form);
+    const revRating = parseInt(fd.get('rating') || 5);
     const newRev = {
       id: state.reviews.length + 1,
       product_id: productId,
       user_id: state.currentUser?.id || 1,
-      user_name: state.currentUser?.name || 'Rahim Sakib',
-      rating: parseInt(fd.get('rating') || 5),
+      user_name: state.currentUser?.name || 'Customer',
+      rating: revRating,
       comment: fd.get('comment'),
       order_number: eligibility.order?.order_number || '',
       verified_purchase: 1,
       created_at: new Date().toISOString().slice(0, 10)
     };
     state.reviews.unshift(newRev);
+
+    // Dynamically recalculate product rating & reviews_count in state.products
+    const prodReviews = state.reviews.filter((r) => r.product_id === productId);
+    const targetProd = state.products.find((p) => p.id === productId);
+    if (targetProd) {
+      targetProd.reviews_count = prodReviews.length;
+      const sum = prodReviews.reduce((acc, r) => acc + Number(r.rating || 0), 0);
+      targetProd.rating = prodReviews.length > 0 ? parseFloat((sum / prodReviews.length).toFixed(1)) : 0;
+    }
+
     persist();
     closeModal();
     showToast('Thank you! Your verified review has been published.', 'success');

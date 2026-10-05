@@ -8472,16 +8472,17 @@
             o.order_status = 'packaged';
           }
         } else if (newStatus === 'processing' || newStatus === 'order_accepted') {
-          if (o.order_status === 'pending') {
+          if (o.order_status === 'pending' || o.order_status === 'order_placed') {
             o.order_status = newStatus;
           }
         }
 
         window.addNotification({
-          title: `Order #${o.order_number} Update`,
-          message: `${store.store_name} marked items as "${newStatus.replace(/_/g, ' ')}"`,
+          title: `Order #${o.order_number} Confirmed`,
+          message: `${store.store_name} accepted and confirmed your order (${newStatus.replace(/_/g, ' ')}).`,
           type: 'order',
           target_role: 'customer',
+          user_id: o.user_id,
           order_id: o.id,
           link: `#/order-tracking?orderId=${o.id}`
         });

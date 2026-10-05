@@ -8472,26 +8472,44 @@
         });
 
         if (newStatus === 'packaged') {
+          so.status = 'packaged';
           const allPackaged = (o.seller_orders || []).every((s) =>
             ['packaged', 'ready_to_ship', 'reached_hub', 'assigned_to_rider', 'in_transit', 'out_for_delivery', 'delivered'].includes(s.status)
           );
           if (allPackaged) {
             o.order_status = 'packaged';
           }
-        } else if (newStatus === 'processing' || newStatus === 'order_accepted') {
-          if (o.order_status === 'pending' || o.order_status === 'order_placed') {
-            o.order_status = newStatus;
-          }
+        } else if (newStatus === 'processing') {
+          so.status = 'processing';
+          o.order_status = 'processing';
+        } else if (newStatus === 'order_accepted' || newStatus === 'confirmed') {
+          so.status = 'confirmed';
+          o.order_status = 'confirmed';
         }
 
+        const statusTitles = {
+          order_accepted: 'Confirmed',
+          confirmed: 'Confirmed',
+          processing: 'Processing',
+          packaged: 'Packaged & Ready'
+        };
+        const statusDescs = {
+          order_accepted: 'accepted and confirmed your order',
+          confirmed: 'accepted and confirmed your order',
+          processing: 'is now preparing and packaging your items',
+          packaged: 'has packed your items for HATEX Logistics dispatch'
+        };
+        const stTitle = statusTitles[newStatus] || newStatus.replace(/_/g, ' ');
+        const stDesc = statusDescs[newStatus] || `updated your order to "${stTitle}"`;
+
         window.addNotification({
-          title: `Order #${o.order_number} Confirmed`,
-          message: `${store.store_name} accepted and confirmed your order (${newStatus.replace(/_/g, ' ')}).`,
+          title: `Order #${o.order_number} ${stTitle}`,
+          message: `${store.store_name} ${stDesc}.`,
           type: 'order',
           target_role: 'customer',
           user_id: o.user_id,
           order_id: o.id,
-          link: `#/order-tracking?orderId=${o.id}`
+          link: `#/order/${o.order_number}`
         });
 
         if (newStatus === 'packaged') {

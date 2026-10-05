@@ -6352,6 +6352,13 @@
                                 const orderItemsTotal = o.total_amount || (o.seller_orders || []).reduce((s, so) => s + (so.subtotal || 0), 0) || 0;
                                 const orderShipping = o.shipping_cost !== undefined ? o.shipping_cost : (o.seller_orders || []).reduce((s, so) => s + (so.shipping_cost || 0), 0) || 0;
                                 const orderGrandTotal = (o.grand_total && o.grand_total > 0) ? o.grand_total : Math.max(0, orderItemsTotal + orderShipping - (o.discount_amount || 0));
+                                const effStatus = (Array.isArray(o.seller_orders) && o.seller_orders.length)
+                                  ? (o.seller_orders.every((so) => so.status === 'delivered') ? 'delivered'
+                                     : o.seller_orders.some((so) => ['shipped', 'out_for_delivery', 'in_transit'].includes(so.status)) ? 'in_transit'
+                                     : o.seller_orders.every((so) => ['ready_to_ship', 'packaged'].includes(so.status)) ? 'packaged'
+                                     : o.seller_orders.some((so) => ['confirmed', 'order_accepted', 'processing'].includes(so.status)) ? 'confirmed'
+                                     : o.order_status)
+                                  : o.order_status;
                                 return `
                               <tr>
                                 <td><strong>${esc(o.order_number)}</strong></td>
@@ -6359,7 +6366,7 @@
                                 <td><span style="font-size:11.5px;font-weight:700;text-transform:uppercase;">${esc(o.payment?.method || 'COD')}</span></td>
                                 <td>${orderShipping === 0 ? '<span class="delivery-badge-free">FREE</span>' : money(orderShipping)}</td>
                                 <td><strong style="color:var(--haat-orange);">${money(orderGrandTotal)}</strong></td>
-                                <td><span class="status-badge ${o.order_status}">${esc(o.order_status.replace(/_/g, ' '))}</span></td>
+                                <td><span class="status-badge ${effStatus}">${esc(effStatus.replace(/_/g, ' '))}</span></td>
                                 <td style="white-space:nowrap;display:flex;gap:6px;align-items:center;">
                                   <button type="button" class="btn-village-primary" onclick="window.viewCustomerOrderDetails('${esc(o.order_number)}')" style="padding:5px 12px;font-size:11.5px;font-weight:700;">
                                     <i class="bi bi-file-earmark-text"></i> Order Details

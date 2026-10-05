@@ -259,9 +259,22 @@ if ($method === 'PUT') {
             $user['id'],
         ]);
 
-        // If delivered, also check if all suborders for parent order are delivered
-        if ($sellerOrderStatus === 'delivered') {
-            $chkParent = $db->prepare('SELECT order_id, COUNT(*) as total, SUM(CASE WHEN status = "delivered" THEN 1 ELSE 0 END) as delivered_cnt FROM seller_orders WHERE order_id = ?');
+        // Synchronize parent order status in orders table
+        if ($sellerOrderStatus === 'confirmed') {
+            $db->prepare("UPDATE orders SET order_status = 'confirmed', updated_at = NOW() WHERE id = ? AND order_status IN ('pending', 'order_placed')")->execute([$so['order_id']]);
+        } elseif ($sellerOrderStatus === 'processing') {
+            $db->prepare("UPDATE orders SET order_status = 'processing', updated_at = NOW() WHERE id = ? AND order_status IN ('pending', 'order_placed', 'confirmed')")->execute([$so['order_id']]);
+        } elseif ($sellerOrderStatus === 'ready_to_ship') {
+            $chkPack = $db->prepare('SELECT COUNT(*) as total, SUM(CASE WHEN status IN ("ready_to_ship","packaged","shipped","delivered") THEN 1 ELSE 0 END) as pack_cnt FROM seller_orders WHERE order_id = ?');
+            $chkPack->execute([$so['order_id']]);
+            $pRow = $chkPack->fetch();
+            if ($pRow && (int)$pRow['total'] === (int)$pRow['pack_cnt']) {
+                $db->prepare("UPDATE orders SET order_status = 'processing', updated_at = NOW() WHERE id = ?")->execute([$so['order_id']]);
+            }
+        } elseif ($sellerOrderStatus === 'shipped') {
+            $db->prepare("UPDATE orders SET order_status = 'shipped', updated_at = NOW() WHERE id = ?")->execute([$so['order_id']]);
+        } elseif ($sellerOrderStatus === 'delivered') {
+            $chkParent = $db->prepare('SELECT COUNT(*) as total, SUM(CASE WHEN status = "delivered" THEN 1 ELSE 0 END) as delivered_cnt FROM seller_orders WHERE order_id = ?');
             $chkParent->execute([$so['order_id']]);
             $pRow = $chkParent->fetch();
             if ($pRow && (int)$pRow['total'] === (int)$pRow['delivered_cnt']) {

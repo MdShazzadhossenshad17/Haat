@@ -61,29 +61,43 @@ if ($method === 'GET') {
             json_error('Forbidden', 403);
         }
 
-        // Seller sub-orders with items
+        // Seller sub-orders with items and delivery tracking
         $soStmt = $db->prepare(
-            "SELECT so.id, so.seller_order_number, so.status,
+            "SELECT so.id, so.order_id, so.store_id, so.assigned_rider_id, so.seller_order_number, so.status,
                     so.subtotal, so.shipping_cost, so.seller_total,
-                    s.store_name, s.store_slug
+                    s.store_name, s.store_slug, s.latitude, s.longitude,
+                    r.id AS rider_id, ru.name AS rider_name, ru.phone AS rider_phone
              FROM seller_orders so
              JOIN stores s ON s.id = so.store_id
+             LEFT JOIN riders r ON r.id = so.assigned_rider_id
+             LEFT JOIN users ru ON ru.id = r.user_id
              WHERE so.order_id = ?"
         );
         $soStmt->execute([$id]);
         $sellerOrders = $soStmt->fetchAll();
 
+        $base = api_base_url();
         foreach ($sellerOrders as &$so) {
             $itemStmt = $db->prepare(
-                'SELECT oi.*, "/HAAT!/api/images.php?type=product&id=" AS img_base
-                 FROM order_items oi WHERE oi.seller_order_id = ?'
+                'SELECT oi.* FROM order_items oi WHERE oi.seller_order_id = ?'
             );
             $itemStmt->execute([$so['id']]);
             $items = $itemStmt->fetchAll();
             foreach ($items as &$it) {
-                $it['image_url'] = "/HAAT!/api/images.php?type=product&id={$it['product_id']}&n=1";
+                $it['image_url'] = "$base/images.php?type=product&id={$it['product_id']}&n=1";
             }
             $so['items'] = $items;
+
+            $trackStmt = $db->prepare(
+                "SELECT dt.id, dt.status, dt.location, dt.latitude, dt.longitude, dt.note, dt.created_at,
+                        u.name AS updated_by_name
+                 FROM delivery_tracking dt
+                 LEFT JOIN users u ON u.id = dt.updated_by
+                 WHERE dt.seller_order_id = ?
+                 ORDER BY dt.created_at ASC"
+            );
+            $trackStmt->execute([$so['id']]);
+            $so['tracking'] = $trackStmt->fetchAll() ?: [];
         }
 
         // Payment
@@ -104,8 +118,9 @@ if ($method === 'GET') {
 
     $whereStr = 'WHERE ' . implode(' AND ', $where);
     $stmt = $db->prepare(
-        "SELECT o.id, o.order_number, o.grand_total, o.order_status,
-                o.shipping_cost, o.discount_amount, o.created_at
+        "SELECT o.id, o.order_number, o.user_id, o.total_amount, o.grand_total, o.order_status,
+                o.shipping_cost, o.discount_amount, o.shipping_name, o.shipping_phone,
+                o.shipping_address, o.district, o.division, o.postal_code, o.created_at
          FROM orders o
          $whereStr
          ORDER BY o.created_at DESC
@@ -292,6 +307,18 @@ if ($method === 'POST') {
                      WHERE product_id = ?'
                 )->execute([$item['quantity'], $item['product_id']]);
             }
+
+            // Insert initial delivery tracking event
+            $db->prepare(
+                'INSERT INTO delivery_tracking (seller_order_id, status, location, note, updated_by)
+                 VALUES (?, ?, ?, ?, ?)'
+            )->execute([
+                $soId,
+                'order_placed',
+                $shipDistrict ? "Order Placed, {$shipDistrict}" : "HAAT Digital Market",
+                'Order received and confirmed by customer. Pending merchant processing.',
+                $user['id']
+            ]);
 
             // Notify seller
             $sellerStmt = $db->prepare('SELECT user_id FROM stores WHERE id = ?');

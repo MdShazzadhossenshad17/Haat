@@ -21,14 +21,15 @@ if ($method === 'GET') {
         $stmt->execute([$id]);
         $row = $stmt->fetch();
         if (!$row) json_error('Brand not found', 404);
-        // Logo served via /api/images.php?type=brand_logo&id=X
-        $row['logo_url'] = "/HAAT!/api/images.php?type=brand_logo&id={$id}";
+        $base = api_base_url();
+        $row['logo_url'] = "$base/images.php?type=brand_logo&id={$id}";
         json_ok($row);
     }
 
     $rows = $db->query('SELECT id, name, slug FROM brands ORDER BY name')->fetchAll();
+    $base = api_base_url();
     foreach ($rows as &$r) {
-        $r['logo_url'] = "/HAAT!/api/images.php?type=brand_logo&id={$r['id']}";
+        $r['logo_url'] = "$base/images.php?type=brand_logo&id={$r['id']}";
     }
     json_ok($rows);
 }

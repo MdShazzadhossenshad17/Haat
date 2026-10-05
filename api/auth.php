@@ -27,13 +27,18 @@ switch ($action) {
         $email    = strtolower(trim($data['email']));
         $password = $data['password'];
         $phone    = trim($data['phone'] ?? '');
-        $rawRole  = trim($data['role'] ?? 'customer');
+        $rawRole  = strtolower(trim($data['role'] ?? 'customer'));
+
+        // Admin & HATEX corporate accounts are fixed — no one can register these roles
+        if (in_array($rawRole, ['admin', 'hatex', 'logistics'])) {
+            json_error('Admin and HATEX corporate accounts are fixed and cannot be registered publicly.', 403);
+        }
 
         // Map roles to valid MySQL users.role ENUM ('customer','seller','admin','logistics')
         $dbRole = 'customer';
         if ($rawRole === 'seller') $dbRole = 'seller';
-        elseif ($rawRole === 'rider' || $rawRole === 'logistics') $dbRole = 'logistics';
-        elseif ($rawRole === 'admin') $dbRole = 'admin';
+        elseif ($rawRole === 'rider') $dbRole = 'logistics';
+        else $dbRole = 'customer';
 
         // Validate email
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {

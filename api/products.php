@@ -355,8 +355,9 @@ json_error('Method not allowed', 405);
 // Helper
 function _product_urls(array $p): array {
     $id = $p['id'];
-    $p['image_1_url'] = "/HAAT!/api/images.php?type=product&id=$id&n=1";
-    $p['image_2_url'] = "/HAAT!/api/images.php?type=product&id=$id&n=2";
-    $p['image_3_url'] = "/HAAT!/api/images.php?type=product&id=$id&n=3";
+    $base = api_base_url();
+    $p['image_1_url'] = "$base/images.php?type=product&id=$id&n=1";
+    $p['image_2_url'] = "$base/images.php?type=product&id=$id&n=2";
+    $p['image_3_url'] = "$base/images.php?type=product&id=$id&n=3";
     return $p;
 }

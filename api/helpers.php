@@ -13,8 +13,15 @@ function boot(): void {
     // CORS — allow the SPA running on same origin (XAMPP)
     header('Access-Control-Allow-Origin: *');
     header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type, X-Requested-With');
+    header('Access-Control-Allow-Headers: Content-Type, X-Requested-With, X-User-Id');
     header('Content-Type: application/json; charset=utf-8');
+
+function api_base_url(): string {
+    $script = $_SERVER['SCRIPT_NAME'] ?? '';
+    $dir = dirname($script);
+    $dir = str_replace('\\', '/', $dir);
+    return rtrim($dir, '/');
+}
 
     // Pre-flight
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -140,6 +147,9 @@ function get_body(): array {
     if ($body === null) {
         $raw  = file_get_contents('php://input');
         $body = $raw ? (json_decode($raw, true) ?? []) : [];
+        if (empty($body) && !empty($_POST)) {
+            $body = $_POST;
+        }
     }
     return $body;
 }

@@ -14,10 +14,40 @@ $sellerOrderId = (int) query('seller_order_id', 0);
 
 // ─── GET — tracking history ──────────────────────────────
 if ($method === 'GET') {
-    if (!$sellerOrderId) json_error('seller_order_id required', 422);
+    $orderId = (int) query('order_id', 0);
+    if (!$sellerOrderId && !$orderId) json_error('seller_order_id or order_id required', 422);
+
+    if ($orderId) {
+        $stmt = $db->prepare(
+            "SELECT dt.id, dt.seller_order_id, dt.status, dt.location, dt.latitude, dt.longitude, dt.note, dt.created_at,
+                    u.name AS updated_by_name, so.seller_order_number, s.store_name,
+                    r.id AS rider_id, ru.name AS rider_name, ru.phone AS rider_phone
+             FROM delivery_tracking dt
+             JOIN seller_orders so ON so.id = dt.seller_order_id
+             JOIN stores s ON s.id = so.store_id
+             LEFT JOIN riders r ON r.id = dt.rider_id
+             LEFT JOIN users ru ON ru.id = r.user_id
+             LEFT JOIN users u ON u.id = dt.updated_by
+             WHERE so.order_id = ?
+             ORDER BY dt.created_at ASC"
+        );
+        $stmt->execute([$orderId]);
+        $events = $stmt->fetchAll();
+
+        // Also get order status
+        $ordStmt = $db->prepare('SELECT order_number, order_status FROM orders WHERE id = ?');
+        $ordStmt->execute([$orderId]);
+        $ord = $ordStmt->fetch();
+
+        json_ok([
+            'order_number' => $ord['order_number'] ?? null,
+            'order_status' => $ord['order_status'] ?? null,
+            'events'       => $events,
+        ]);
+    }
 
     $stmt = $db->prepare(
-        "SELECT dt.id, dt.status, dt.location, dt.note, dt.created_at,
+        "SELECT dt.id, dt.status, dt.location, dt.latitude, dt.longitude, dt.note, dt.created_at,
                 u.name AS updated_by_name
          FROM delivery_tracking dt
          LEFT JOIN users u ON u.id = dt.updated_by
@@ -49,15 +79,15 @@ if ($method === 'GET') {
 
 // ─── POST — add tracking event ───────────────────────────
 if ($method === 'POST') {
-    $user = role_required(['seller', 'admin', 'logistics']);
+    $user = role_required(['seller', 'admin', 'logistics', 'hatex', 'rider']);
     $data = require_body('seller_order_id', 'status');
 
     $soId  = (int) $data['seller_order_id'];
     $status = $data['status'];
 
-    // Get rider id if logistics
+    // Get rider id if logistics, hatex, or rider
     $riderId = null;
-    if ($user['role'] === 'logistics') {
+    if ($user['role'] === 'logistics' || $user['role'] === 'rider' || $user['role'] === 'hatex') {
         $rStmt = $db->prepare('SELECT id FROM riders WHERE user_id = ?');
         $rStmt->execute([$user['id']]);
         $rider = $rStmt->fetch();
@@ -97,7 +127,7 @@ if ($method === 'POST') {
         $chkParent->execute([$soId]);
         $pRow = $chkParent->fetch();
         if ($pRow && (int)$pRow['total'] === (int)$pRow['delivered_cnt']) {
-            $db->prepare("UPDATE orders SET status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$pRow['order_id']]);
+            $db->prepare("UPDATE orders SET order_status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$pRow['order_id']]);
         }
     }
 

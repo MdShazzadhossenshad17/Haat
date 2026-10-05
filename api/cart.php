@@ -38,8 +38,9 @@ if ($method === 'GET') {
     $stmt->execute([$user['id']]);
     $items = $stmt->fetchAll();
 
+    $base = api_base_url();
     foreach ($items as &$it) {
-        $it['image_url'] = "/HAAT!/api/images.php?type=product&id={$it['pid']}&n=1";
+        $it['image_url'] = "$base/images.php?type=product&id={$it['pid']}&n=1";
     }
 
     $total = array_sum(array_column($items, 'line_total'));

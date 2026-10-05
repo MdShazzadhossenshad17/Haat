@@ -37,8 +37,9 @@ if ($method === 'GET') {
     );
     $stmt->execute([$user['id']]);
     $rows = $stmt->fetchAll();
+    $base = api_base_url();
     foreach ($rows as &$r) {
-        $r['image_url'] = "/HAAT!/api/images.php?type=product&id={$r['product_id']}&n=1";
+        $r['image_url'] = "$base/images.php?type=product&id={$r['product_id']}&n=1";
     }
     json_ok($rows);
 }

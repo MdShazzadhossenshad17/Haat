@@ -1287,9 +1287,9 @@
         u.password = storedPw || 'haat2026';
       }
     });
-    if (state.activeRole && !state.currentUserId && state.users.length) {
-      const match = state.users.find((u) => u.role === state.activeRole);
-      if (match) state.currentUserId = match.id;
+    if (state.activeRole && !state.currentUserId) {
+      if (state.activeRole === 'admin') state.currentUserId = 4;
+      else if (state.activeRole === 'hatex') state.currentUserId = 5;
     }
     state.stores.forEach((s) => {
       if (s.id === 1) { s.delivery_charge = 60; s.free_delivery = 0; }
@@ -1446,30 +1446,19 @@
       return;
     }
 
-    if (state.activeRole === 'customer') {
-      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
-      state.currentUser = match || state.users.find((u) => u.role === 'customer') || state.users[0];
-    } else if (state.activeRole === 'seller') {
-      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
-      state.currentUser = match || state.users.find((u) => u.role === 'seller') || state.users[1];
-      const sellerStore = state.stores.find((s) => String(s.user_id) === String(state.currentUser?.id) || (state.currentUser?.store_id && String(s.id) === String(state.currentUser?.store_id)));
-      if (sellerStore) state.currentUser.name = sellerStore.store_name;
-    } else if (state.activeRole === 'admin') {
+    if (state.activeRole === 'admin') {
       state.currentUser = state.users.find((u) => u.role === 'admin') || { id: 4, name: 'Admin', email: 'admin@haat.com.bd', role: 'admin', phone: '01511223344', password: 'haat2026' };
       state.currentUser.name = 'Admin';
+      state.currentUserId = state.currentUser.id;
     } else if (state.activeRole === 'hatex') {
       state.currentUser = state.users.find((u) => u.name === 'HATEX' || (u.role === 'logistics' && u.id === 5)) || { id: 5, name: 'HATEX', email: 'logistics@hatex.com.bd', role: 'logistics', phone: '01611223344', password: 'haat2026' };
       state.currentUser.name = 'HATEX';
-    } else if (state.activeRole === 'rider') {
-      const match = state.currentUserId ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null;
-      const rUser = match || state.users.find((u) => u.role === 'rider' || u.id === 6) || state.users[5];
-      if (rUser) rUser.name = rUser.name.replace(/\s*\(Rider.*?\)/gi, '').trim();
-      state.currentUser = rUser;
-    } else {
-      state.currentUser = null;
-    }
-    if (state.currentUser) {
       state.currentUserId = state.currentUser.id;
+    } else {
+      // For customer, seller, rider: if not authenticated with a valid currentUserId, account is Guest
+      state.currentUser = null;
+      state.currentUserId = null;
+      state.activeRole = null;
     }
   }
   resolveCurrentUser();
@@ -1631,8 +1620,30 @@
     const footerCols = $('#footerMainColumns');
     const floatingReportBtn = $('#floatingReportBtn') || $('.floating-admin-chat-btn');
 
-    const unreadMsgs = state.activeRole
-      ? state.messages.filter((m) => m.receiver_role === state.activeRole && !m.is_read).length
+    const curUserId = state.currentUser ? state.currentUser.id : null;
+    const curStoreId = (state.activeRole === 'seller')
+      ? (state.stores.find((s) => String(s.user_id) === String(curUserId) || (state.currentUser?.store_id && String(s.id) === String(state.currentUser.store_id)))?.id)
+      : null;
+    const curRiderId = (state.activeRole === 'rider')
+      ? (state.riders.find((r) => String(r.user_id) === String(curUserId))?.id)
+      : null;
+
+    const unreadMsgs = (state.activeRole && curUserId)
+      ? state.messages.filter((m) => {
+          if (m.is_read) return false;
+          if (state.activeRole === 'admin') return m.receiver_role === 'admin';
+          if (state.activeRole === 'hatex') return m.receiver_role === 'hatex' || m.receiver_role === 'logistics';
+          if (state.activeRole === 'seller') {
+            return (m.receiver_role === 'seller' && (String(m.receiver_id) === String(curUserId) || (curStoreId && m.channel_id && m.channel_id.startsWith(`seller_${curStoreId}_`))));
+          }
+          if (state.activeRole === 'rider') {
+            return (m.receiver_role === 'rider' && (String(m.receiver_id) === String(curUserId) || (curRiderId && m.channel_id && m.channel_id.startsWith(`rider_${curRiderId}_`))));
+          }
+          if (state.activeRole === 'customer') {
+            return (m.receiver_role === 'customer' && String(m.receiver_id) === String(curUserId));
+          }
+          return false;
+        }).length
       : 0;
 
     // 1. Visibility of Cart, Wishlist, Notifications, Search & Footer based on Role & Route
@@ -1864,9 +1875,26 @@
     const notifListEl = $('#notificationFlyoutList');
 
     const curRole = state.activeRole || 'customer';
-    const roleNotifs = (state.notifications || []).filter((n) => {
-      if (!n.target_role || n.target_role === 'all') return true;
-      return n.target_role === curRole;
+    const curUser = state.currentUser;
+
+    const roleNotifs = (!curUser || !curUserId) ? [] : (state.notifications || []).filter((n) => {
+      // Must match target role if defined
+      if (n.target_role && n.target_role !== 'all' && n.target_role !== curRole) return false;
+      // Fixed administrative / corporate accounts
+      if (curRole === 'admin' || curRole === 'hatex') {
+        if (n.target_role === curRole) return true;
+        if (n.user_id && String(n.user_id) === String(curUserId)) return true;
+        return false;
+      }
+      // For Customer, Seller, and Rider:
+      // STRICT ISOLATION: The notification MUST belong to this individual user!
+      if (n.user_id != null && String(n.user_id) !== String(curUserId)) {
+        return false;
+      }
+      if (n.user_id == null && n.target_role !== curRole && n.target_role !== 'all') {
+        return false;
+      }
+      return true;
     });
 
     const unreadNotifs = roleNotifs.filter((n) => !n.is_read);
@@ -1883,7 +1911,7 @@
         notifListEl.innerHTML = `
           <div style="padding:28px 16px;text-align:center;color:var(--text-muted);font-size:12.5px;">
             <i class="bi bi-bell-slash" style="font-size:24px;display:block;margin-bottom:6px;opacity:0.5;"></i>
-            No notifications for ${esc(getDisplayRoleName(curRole))} right now
+            No notifications for ${esc(curUser?.name || getDisplayRoleName(curRole))} right now
           </div>
         `;
       } else {
@@ -1916,11 +1944,11 @@
     }
   }
 
-  window.addNotification = function ({ title, message, type = 'order', target_role = 'customer', order_id = null, link = '' }) {
+  window.addNotification = function ({ title, message, type = 'order', target_role = 'customer', order_id = null, link = '', user_id = null }) {
     state.notifications = state.notifications || [];
     const notif = {
       id: Date.now() + Math.floor(Math.random() * 1000),
-      user_id: state.currentUser?.id || 1,
+      user_id: user_id != null ? user_id : (state.currentUser?.id || null),
       target_role: target_role,
       order_id: order_id,
       link: link,
@@ -1952,9 +1980,12 @@
 
   window.markAllNotificationsRead = function () {
     const curRole = state.activeRole || 'customer';
-    if (state.notifications) {
+    const curUserId = state.currentUser ? state.currentUser.id : null;
+    if (state.notifications && curUserId) {
       state.notifications.forEach((n) => {
-        if (!n.target_role || n.target_role === 'all' || n.target_role === curRole) {
+        const matchesUser = (n.user_id != null && String(n.user_id) === String(curUserId)) ||
+          ((curRole === 'admin' || curRole === 'hatex') && n.target_role === curRole);
+        if (matchesUser) {
           n.is_read = 1;
         }
       });
@@ -2341,6 +2372,8 @@
       const greetingText =
         store.auto_greeting ||
         `Assalamu Alaikum! Welcome to ${store.store_name}. Thank you for reaching out to us! How can we help you today?`;
+      const curCustId = state.currentUser ? state.currentUser.id : 1;
+      const curCustName = state.currentUser ? state.currentUser.name : 'Customer';
       state.messages.push({
         id: Date.now(),
         order_id: orderId || 1,
@@ -2348,8 +2381,8 @@
         sender_id: store.user_id || 2,
         sender_name: store.store_name,
         sender_role: 'seller',
-        receiver_id: state.currentUser?.id || 1,
-        receiver_name: state.currentUser?.name || 'Customer',
+        receiver_id: curCustId,
+        receiver_name: curCustName,
         receiver_role: 'customer',
         message: greetingText,
         created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2499,9 +2532,12 @@
     const txt = (input?.value || '').trim();
     if (!txt) return;
 
+    const curCustId = state.currentUser ? state.currentUser.id : 1;
+    const curCustName = state.currentUser ? state.currentUser.name : 'Customer';
     const channelId = state.activeChatChannel || `seller_1_order_${state.orders[0]?.id || 1}`;
     let targetRole = 'seller';
     let targetName = 'ABC Fashion Store';
+    let targetReceiverId = 2;
     let orderId = state.orders[0]?.id || 1;
     let storeId = 1;
 
@@ -2512,6 +2548,7 @@
       orderId = Number(parts[3]) || orderId;
       const rider = state.riders.find((r) => r.id === rId) || state.riders[0];
       targetName = rider?.name || 'Tareq Ahmed';
+      targetReceiverId = rider?.user_id || 6;
     } else if (channelId.startsWith('seller_')) {
       targetRole = 'seller';
       const parts = channelId.split('_');
@@ -2519,6 +2556,7 @@
       orderId = Number(parts[3]) || orderId;
       const store = getStore(storeId);
       targetName = store?.store_name || 'ABC Fashion Store';
+      targetReceiverId = store?.user_id || 2;
     }
 
     // Check if this is the very first message in this seller channel — if so, trigger automatic store greeting first!
@@ -2527,10 +2565,10 @@
     const newMsg = {
       id: Date.now(),
       order_id: orderId,
-      sender_id: state.currentUser?.id || 1,
-      sender_name: state.currentUser?.name || 'Customer',
+      sender_id: curCustId,
+      sender_name: curCustName,
       sender_role: 'customer',
-      receiver_id: targetRole === 'rider' ? 6 : 2,
+      receiver_id: targetReceiverId,
       receiver_name: targetName,
       receiver_role: targetRole,
       channel_id: channelId,
@@ -2543,10 +2581,11 @@
     if (input && input.value !== undefined) input.value = '';
 
     window.addNotification({
-      title: `New Message from ${state.currentUser?.name || 'Customer'}`,
+      title: `New Message from ${curCustName}`,
       message: txt.length > 70 ? txt.slice(0, 70) + '...' : txt,
       type: 'chat',
       target_role: targetRole,
+      user_id: targetReceiverId,
       order_id: orderId,
       link: targetRole === 'seller' ? '#/dash/seller/messages' : '#/dash/rider/messages'
     });
@@ -2559,11 +2598,11 @@
         id: Date.now() + 1,
         order_id: orderId,
         channel_id: channelId,
-        sender_id: store.user_id || 2,
+        sender_id: targetReceiverId,
         sender_name: store.store_name,
         sender_role: 'seller',
-        receiver_id: state.currentUser?.id || 1,
-        receiver_name: state.currentUser?.name || 'Customer',
+        receiver_id: curCustId,
+        receiver_name: curCustName,
         receiver_role: 'customer',
         message: greetingMsg,
         created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2576,6 +2615,7 @@
         message: greetingMsg.length > 70 ? greetingMsg.slice(0, 70) + '...' : greetingMsg,
         type: 'chat',
         target_role: 'customer',
+        user_id: curCustId,
         order_id: orderId,
         link: '#/account/messages'
       });
@@ -2686,6 +2726,8 @@
     state.currentUser = null;
     state.currentUserId = null;
     state.appliedCoupon = null;
+    state.activeChatChannel = null;
+    writeStorage('activeRole', null);
     writeStorage('currentUserId', null);
     try {
       localStorage.removeItem('HAAT_API_USER_ID');
@@ -2700,6 +2742,7 @@
   window.instantDemoLogin = function (role) {
     state.activeRole = role;
     state.appliedCoupon = null;
+    state.activeChatChannel = null;
     if (role === 'customer') {
       const u = state.users.find(x => x.id === 1 || x.email === 'customer@haat.com.bd') || state.users.find(x => x.role === 'customer');
       state.currentUserId = u ? u.id : 1;
@@ -2780,6 +2823,7 @@
     state.currentUser = user;
     state.lastAuthEmail = user.email;
     state.appliedCoupon = null;
+    state.activeChatChannel = null;
     persist();
     showToast(`Welcome back, ${user.name}!`, 'success');
 
@@ -2876,8 +2920,13 @@
       state.currentUserId = newUser.id;
       state.currentUser = newUser;
       state.appliedCoupon = null;
+      state.activeChatChannel = null;
       if (!state.collectedCouponsByUser) state.collectedCouponsByUser = {};
       state.collectedCouponsByUser[String(newUser.id)] = [];
+      if (!state.cartByUser) state.cartByUser = {};
+      state.cartByUser[String(newUser.id)] = [];
+      if (!state.wishlistByUser) state.wishlistByUser = {};
+      state.wishlistByUser[String(newUser.id)] = [];
       persist();
       showToast(`Welcome to HAAT, ${name}! Your account has been registered.`, 'success');
       location.hash = '#/account';
@@ -2928,6 +2977,8 @@
       state.activeRole = 'seller';
       state.currentUserId = newUser.id;
       state.currentUser = newUser;
+      state.appliedCoupon = null;
+      state.activeChatChannel = null;
       persist();
       showToast(`Store "${storeName}" is now active and open!`, 'success');
       location.hash = '#/dash/seller';
@@ -2962,6 +3013,8 @@
       state.activeRole = 'rider';
       state.currentUserId = newUser.id;
       state.currentUser = newUser;
+      state.appliedCoupon = null;
+      state.activeChatChannel = null;
       persist();
       showToast(`Rider ${cleanName} registered!`, 'success');
       location.hash = '#/dash/rider';
@@ -5405,30 +5458,35 @@
       location.hash = '#/auth';
       return '';
     }
+    const curUserId = state.currentUser ? state.currentUser.id : null;
     let order = null;
+    const allOrders = state.orders || [];
+
     if (orderQuery) {
-      order = state.orders.find((o) => o.order_number === orderQuery || String(o.id) === String(orderQuery));
-      if (!order) {
-        return `
-          <div class="container" style="padding:60px 16px;text-align:center;">
-            <div class="page-card" style="max-width:500px;margin:0 auto;background:#fff;padding:40px;border-radius:12px;border:1px solid #E2E8F0;">
-              <i class="bi bi-search" style="font-size:44px;color:#94A3B8;margin-bottom:12px;display:block;"></i>
-              <h2 style="font-size:20px;font-weight:800;color:#1E293B;margin-bottom:8px;">Order Not Found</h2>
-              <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">We could not locate an order matching "${esc(orderQuery)}". Please verify your order number.</p>
-              <a href="#/account/orders" class="btn-village-primary"><i class="bi bi-box-seam"></i> View My Orders</a>
-            </div>
-          </div>
-        `;
+      const q = String(orderQuery).trim().toLowerCase();
+      order = allOrders.find((o) =>
+        (o.order_number && o.order_number.toLowerCase() === q) ||
+        String(o.id) === q ||
+        (Array.isArray(o.seller_orders) && o.seller_orders.some((so) => so.seller_order_number && so.seller_order_number.toLowerCase() === q))
+      );
+    }
+    if (!order) {
+      if (state.activeRole === 'customer' && curUserId) {
+        order = allOrders.find((o) => String(o.user_id) === String(curUserId));
+      } else {
+        order = allOrders[0];
       }
-    } else {
-      order = state.orders[0];
     }
 
     if (!order) {
       return `
         <div class="container" style="padding:60px 16px;text-align:center;">
-          <h2>No Orders Found</h2>
-          <a href="#/products" class="btn-village-primary" style="margin-top:14px;display:inline-block;">Shop Now</a>
+          <div class="page-card" style="max-width:500px;margin:0 auto;background:#fff;padding:40px;border-radius:12px;border:1px solid #E2E8F0;">
+            <i class="bi bi-box-seam" style="font-size:44px;color:#94A3B8;margin-bottom:12px;display:block;"></i>
+            <h2 style="font-size:20px;font-weight:800;color:#1E293B;margin-bottom:8px;">No Active Orders</h2>
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">You haven't placed any orders yet. Browse our marketplace and place your first order!</p>
+            <a href="#/products" class="btn-village-primary"><i class="bi bi-shop"></i> Explore Products</a>
+          </div>
         </div>
       `;
     }
@@ -5452,14 +5510,45 @@
 
     let currentStepIdx = statusHierarchy[order.order_status] ?? 0;
 
-    const totalSellers = (order.seller_orders || []).length;
-    const allPackaged = totalSellers > 0 && order.seller_orders.every((so) =>
+    let sellerOrdersList = Array.isArray(order.seller_orders) && order.seller_orders.length ? order.seller_orders : null;
+    if (!sellerOrdersList) {
+      const items = Array.isArray(order.items) && order.items.length ? order.items : [
+        { product_name: 'Artisanal HAAT Marketplace Item', quantity: 1, unit_price: order.total_amount || order.grand_total || 500, subtotal: order.total_amount || order.grand_total || 500 }
+      ];
+      sellerOrdersList = [
+        {
+          id: (order.id || 1) * 100 + 1,
+          order_id: order.id || 1,
+          store_id: 1,
+          seller_order_number: `SO-${order.id || 1}-HAAT`,
+          subtotal: order.total_amount || order.grand_total || 500,
+          shipping_cost: order.shipping_cost || 0,
+          seller_total: order.grand_total || 500,
+          status: order.order_status || 'order_placed',
+          assigned_rider_id: null,
+          items: items,
+          tracking: [
+            {
+              id: 1,
+              status: order.order_status || 'order_placed',
+              location: 'HAAT Central Marketplace',
+              latitude: 23.7500,
+              longitude: 90.3900,
+              note: 'Order confirmed and verified.',
+              created_at: order.created_at || 'Just now'
+            }
+          ]
+        }
+      ];
+    }
+    const totalSellers = sellerOrdersList.length;
+    const allPackaged = totalSellers > 0 && sellerOrdersList.every((so) =>
       ['packaged', 'ready_to_ship', 'reached_hub', 'at_hub', 'assigned_to_rider', 'in_transit', 'out_for_delivery', 'delivered'].includes(so.status)
     );
-    const anyOutForDelivery = (order.seller_orders || []).some((so) =>
+    const anyOutForDelivery = sellerOrdersList.some((so) =>
       ['out_for_delivery', 'in_transit'].includes(so.status)
     );
-    const anyAssignedRider = (order.seller_orders || []).some((so) =>
+    const anyAssignedRider = sellerOrdersList.some((so) =>
       so.assigned_rider_id != null || ['assigned_to_rider', 'out_for_delivery', 'in_transit', 'delivered'].includes(so.status)
     );
 
@@ -5468,7 +5557,7 @@
     if (anyOutForDelivery && currentStepIdx < 4) currentStepIdx = 4;
 
     // Determine assigned rider if any
-    const assignedRiderId = order.seller_orders?.find((so) => so.assigned_rider_id)?.assigned_rider_id || (currentStepIdx >= 3 ? 1 : null);
+    const assignedRiderId = sellerOrdersList.find((so) => so.assigned_rider_id)?.assigned_rider_id || (currentStepIdx >= 3 ? 1 : null);
     const assignedRider = assignedRiderId ? (state.riders.find((r) => r.id === Number(assignedRiderId)) || state.riders[0]) : null;
 
     const progressWidth = currentStepIdx === 5 ? 100
@@ -5479,12 +5568,15 @@
       : 5;
 
     let minRemainingDist = 999;
-    order.seller_orders.forEach((so) => {
+    sellerOrdersList.forEach((so) => {
       const store = getStore(so.store_id) || state.stores[0];
-      const latestTrack = so.tracking[so.tracking.length - 1];
-      const curLat = latestTrack?.latitude || store.latitude;
-      const curLon = latestTrack?.longitude || store.longitude;
-      const rem = haversineDistance(curLat, curLon, order.customer_lat, order.customer_lon);
+      const trackingList = Array.isArray(so.tracking) ? so.tracking : [];
+      const latestTrack = trackingList.length ? trackingList[trackingList.length - 1] : null;
+      const curLat = latestTrack?.latitude || store?.latitude || 23.7500;
+      const curLon = latestTrack?.longitude || store?.longitude || 90.3900;
+      const custLat = order.customer_lat || 23.7500;
+      const custLon = order.customer_lon || 90.3900;
+      const rem = haversineDistance(curLat, curLon, custLat, custLon);
       if (rem < minRemainingDist) minRemainingDist = rem;
     });
     if (minRemainingDist === 999) minRemainingDist = 4.4;
@@ -5586,7 +5678,7 @@
       }
     ];
 
-    const firstStoreId = order.seller_orders[0]?.store_id || 1;
+    const firstStoreId = (sellerOrdersList[0]?.store_id) || 1;
 
     return `
       <div class="container" style="margin-top:24px;margin-bottom:60px;">
@@ -5671,12 +5763,12 @@
         <!-- Per-Seller Package & Status Breakdown + Ordered Products Summary -->
         <div class="daraz-order-summary-card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #F1F5F9;">
-            <h2 style="font-size:15px;font-weight:800;color:#1E293B;margin:0;">Seller Packages & Delivery Breakdown (${(order.seller_orders || []).length} Store Package${(order.seller_orders || []).length > 1 ? 's' : ''})</h2>
-            <span style="font-size:12px;color:var(--text-muted);">Destination: ${esc(order.shipping_address)}, ${esc(order.district)}</span>
+            <h2 style="font-size:15px;font-weight:800;color:#1E293B;margin:0;">Seller Packages & Delivery Breakdown (${sellerOrdersList.length} Store Package${sellerOrdersList.length > 1 ? 's' : ''})</h2>
+            <span style="font-size:12px;color:var(--text-muted);">Destination: ${esc(order.shipping_address || 'Dhaka')}, ${esc(order.district || 'Dhaka')}</span>
           </div>
 
           <div style="display:flex;flex-direction:column;gap:14px;">
-            ${(order.seller_orders || [])
+            ${sellerOrdersList
               .map((so) => {
                 const store = getStore(so.store_id) || state.stores[0];
                 const rider = so.assigned_rider_id ? state.riders.find((r) => r.id === Number(so.assigned_rider_id)) : null;
@@ -5841,7 +5933,22 @@
      ========================================================================= */
 
   function renderDashboardMessagesView() {
-    const customerOrders = (state.orders || []).filter(o => String(o.user_id) === String(state.currentUser?.id));
+    const curUser = state.currentUser;
+    const curUserId = curUser ? curUser.id : null;
+    if (!curUserId) {
+      return `
+        <div style="background:#fff;padding:40px 20px;text-align:center;border-radius:10px;border:1px solid #E2E8F0;">
+          <i class="bi bi-person-lock" style="font-size:36px;color:#94A3B8;display:block;margin-bottom:12px;"></i>
+          <h3 style="font-size:17px;font-weight:800;color:#1E293B;">Please Log In</h3>
+          <p style="font-size:13px;color:var(--text-muted);max-width:440px;margin:6px auto 16px;">
+            Log in to your account to view your messages and chat with stores and riders.
+          </p>
+          <a href="#/auth" class="btn-village-primary" style="display:inline-block;padding:8px 18px;">Log In / Register</a>
+        </div>
+      `;
+    }
+
+    const customerOrders = (state.orders || []).filter(o => String(o.user_id) === String(curUserId));
     const channels = [];
     const seenIds = new Set();
 
@@ -5897,17 +6004,21 @@
       });
     });
 
-    // Also include any direct seller inquiries started from a store page or active selection
-    state.stores.forEach((store) => {
-      const directId = `seller_${store.id}_order_1`;
-      const hasDirectMsg = state.messages.some((m) => m.channel_id === directId);
-      if ((hasDirectMsg || state.activeChatChannel === directId) && !seenIds.has(directId)) {
-        seenIds.add(directId);
+    // Also include any direct inquiries initiated by or addressed to this customer
+    state.messages.forEach((m) => {
+      const isMyMsg = (String(m.sender_id) === String(curUserId) || String(m.receiver_id) === String(curUserId));
+      if (!isMyMsg || !m.channel_id || seenIds.has(m.channel_id)) return;
+
+      if (m.channel_id.startsWith('seller_')) {
+        const parts = m.channel_id.split('_');
+        const sId = Number(parts[1]) || 1;
+        const store = getStore(sId) || state.stores[0];
+        seenIds.add(m.channel_id);
         channels.push({
-          id: directId,
+          id: m.channel_id,
           type: 'seller',
           storeId: store.id,
-          orderId: 1,
+          orderId: m.order_id || 1,
           orderNumber: 'STORE-INQUIRY',
           title: store.store_name,
           roleLabel: 'Seller Store',
@@ -5916,6 +6027,25 @@
           avatar: store.logo_text?.[0] || 'S',
           subtext: `Direct Store Chat • ${store.district || 'Verified Merchant'}`,
           isRider: false
+        });
+      } else if (m.channel_id.startsWith('rider_')) {
+        const parts = m.channel_id.split('_');
+        const rId = Number(parts[1]) || 1;
+        const rider = state.riders.find((r) => r.id === rId) || state.riders[0];
+        seenIds.add(m.channel_id);
+        channels.push({
+          id: m.channel_id,
+          type: 'rider',
+          riderId: rider.id,
+          orderId: m.order_id || 1,
+          orderNumber: 'DELIVERY-CHAT',
+          title: rider.name,
+          roleLabel: 'Delivery Rider',
+          badgeClass: 'role-badge-rider',
+          status: 'In Contact',
+          avatar: 'R',
+          subtext: `Delivery Chat • ${rider.phone}`,
+          isRider: true
         });
       }
     });
@@ -5997,10 +6127,11 @@
     }
 
     const channelMessages = state.messages.filter((m) => {
-      if (m.channel_id === activeChannel.id) return true;
-      if (activeChannel.type === 'seller' && m.order_id === activeChannel.orderId && m.sender_name === activeChannel.title) return true;
-      if (activeChannel.type === 'rider' && m.order_id === activeChannel.orderId && (m.receiver_role === 'rider' || m.sender_role === 'rider')) return true;
-      return false;
+      if (m.channel_id !== activeChannel.id) return false;
+      if (String(m.sender_id) !== String(curUserId) && String(m.receiver_id) !== String(curUserId)) {
+        return false;
+      }
+      return true;
     });
 
     const customerQuickList = state.quickMessages?.customer || [];
@@ -6151,10 +6282,14 @@
       return '';
     }
 
-    const user = state.currentUser || (state.currentUserId != null ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null) || state.users[0];
+    const user = state.currentUser || (state.currentUserId != null ? state.users.find((u) => String(u.id) === String(state.currentUserId)) : null);
+    if (!user) {
+      location.hash = '#/auth';
+      return '';
+    }
     const myOrders = (state.orders || []).filter((o) => String(o.user_id) === String(user.id));
     const myAddresses = (state.addresses || []).filter((a) => String(a.user_id) === String(user.id));
-    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && (String(r.user_id) === String(user.id) || r.reporter_name === user.name));
+    const myReports = (state.reports || []).filter((r) => r.reporter_role === 'customer' && String(r.user_id) === String(user.id));
     const myCollectedCoupons = (state.collectedCoupons || []).map((id) => state.coupons.find((c) => c.id === id && c.is_active)).filter(Boolean);
 
     return `
@@ -6681,10 +6816,10 @@
     }
     if (targetRole === 'seller' && state.activeRole === 'customer') {
       const store = getStore(targetId) || state.stores[0];
-      const orderWithStore = state.orders.find((o) => (o.seller_orders || []).some((so) => so.store_id === store.id));
-      const orderId = orderWithStore ? orderWithStore.id : 1;
-      const chanId = `seller_${store.id}_order_${orderId}`;
-      ensureSellerAutoGreeting(chanId, store.id, orderId);
+      const curCustId = state.currentUser ? state.currentUser.id : 1;
+      const orderWithStore = state.orders.find((o) => String(o.user_id) === String(curCustId) && (o.seller_orders || []).some((so) => so.store_id === store.id));
+      const chanId = orderWithStore ? `seller_${store.id}_order_${orderWithStore.id}` : `seller_${store.id}_user_${curCustId}`;
+      ensureSellerAutoGreeting(chanId, store.id, orderWithStore ? orderWithStore.id : null);
       state.activeChatChannel = chanId;
       persist();
       if (location.hash === '#/account/messages') {
@@ -6737,11 +6872,38 @@
   };
 
   function renderRoleMessagingPanel(viewerRole) {
-    // Filter out customer->admin direct chat if any old message existed
-    const roleMessages = state.messages.filter((m) =>
-      (m.sender_role === viewerRole || m.receiver_role === viewerRole) &&
-      !(viewerRole === 'customer' && (m.sender_role === 'admin' || m.receiver_role === 'admin'))
-    );
+    const curUserId = state.currentUser ? state.currentUser.id : null;
+    const sellerStore = (viewerRole === 'seller' && typeof getSellerOwnStore === 'function') ? getSellerOwnStore() : null;
+    const riderInfo = (viewerRole === 'rider') ? ((state.riders || []).find((r) => String(r.user_id) === String(curUserId) || (state.currentUser && r.name === state.currentUser.name)) || null) : null;
+
+    // Filter roleMessages strictly by the logged-in entity's identity
+    const roleMessages = state.messages.filter((m) => {
+      // Exclude customer <-> admin direct chat
+      if (viewerRole === 'customer' && (m.sender_role === 'admin' || m.receiver_role === 'admin')) return false;
+
+      if (viewerRole === 'admin') {
+        return m.sender_role === 'admin' || m.receiver_role === 'admin';
+      }
+      if (viewerRole === 'hatex') {
+        return m.sender_role === 'hatex' || m.receiver_role === 'hatex' || m.sender_role === 'logistics' || m.receiver_role === 'logistics';
+      }
+      if (viewerRole === 'seller') {
+        if (!sellerStore) return false;
+        const matchesUser = (curUserId != null && (String(m.sender_id) === String(curUserId) || String(m.receiver_id) === String(curUserId)));
+        const matchesChannel = (m.channel_id && (m.channel_id.startsWith(`seller_${sellerStore.id}_`) || m.channel_id.startsWith(`hatex_seller_${sellerStore.id}_`)));
+        return matchesUser || matchesChannel;
+      }
+      if (viewerRole === 'rider') {
+        if (!riderInfo && !curUserId) return false;
+        const matchesUser = (curUserId != null && (String(m.sender_id) === String(curUserId) || String(m.receiver_id) === String(curUserId)));
+        const matchesChannel = (riderInfo && m.channel_id && m.channel_id.startsWith(`rider_${riderInfo.id}_`));
+        return matchesUser || matchesChannel;
+      }
+      if (viewerRole === 'customer') {
+        return curUserId != null && (String(m.sender_id) === String(curUserId) || String(m.receiver_id) === String(curUserId));
+      }
+      return false;
+    });
 
     const channelMap = {};
     roleMessages.forEach((m) => {
@@ -7108,14 +7270,25 @@
      ========================================================================= */
 
   function renderSellerDashView(subTab = 'overview') {
-    const store = getSellerOwnStore() || state.stores[0];
+    const curUserId = state.currentUser ? state.currentUser.id : null;
+    const store = getSellerOwnStore() || {
+      id: 9999,
+      user_id: curUserId,
+      store_name: state.currentUser?.name || 'My Store',
+      delivery_charge: 60,
+      free_delivery: 0
+    };
     const storeOrders = state.orders.flatMap((o) =>
       (o.seller_orders || []).filter((so) => so.store_id === store.id).map((so) => ({ ...so, parentOrder: o }))
     );
     const storeProducts = state.products.filter((p) => p.store_id === store.id);
     const storeCoupons = state.coupons.filter((c) => c.store_id === store.id);
     const totalSales = storeOrders.reduce((s, so) => s + so.seller_total, 0);
-    const sellerUnreadMsgs = state.messages.filter((m) => m.receiver_role === 'seller' && !m.is_read).length;
+    const sellerUnreadMsgs = state.messages.filter((m) =>
+      m.receiver_role === 'seller' &&
+      !m.is_read &&
+      (String(m.receiver_id) === String(curUserId) || (store && m.channel_id && m.channel_id.startsWith(`seller_${store.id}_`)))
+    ).length;
 
     return `
       <div class="container">
@@ -11026,8 +11199,7 @@
   function renderRiderView(subTab = 'dashboard') {
     const curRiderUser = state.currentUser;
     const rider = (state.riders || []).find((r) => String(r.user_id) === String(curRiderUser?.id) || (curRiderUser && r.name === curRiderUser.name)) ||
-                  state.riders[0] ||
-                  { id: curRiderUser?.id || 1, name: curRiderUser?.name || 'Tareq Ahmed', phone: curRiderUser?.phone || '01711223388', vehicle_type: 'Motorcycle', hub: 'Dhaka Metro', status: 'active' };
+                  { id: curRiderUser?.id || 9999, name: curRiderUser?.name || 'Rider', phone: curRiderUser?.phone || '01711223388', vehicle_type: 'Motorcycle', hub: 'Dhaka Metro', status: 'active' };
     const assigned = [];
     const availablePool = [];
 
@@ -11041,7 +11213,11 @@
       });
     });
 
-    const riderUnreadMsgs = state.messages.filter((m) => m.receiver_role === 'rider' && !m.is_read).length;
+    const riderUnreadMsgs = state.messages.filter((m) =>
+      m.receiver_role === 'rider' &&
+      !m.is_read &&
+      (String(m.receiver_id) === String(curRiderUser?.id) || (rider && m.channel_id && m.channel_id.startsWith(`rider_${rider.id}_`)))
+    ).length;
 
     return `
       <div class="container">
@@ -11170,10 +11346,13 @@
                     ? assigned
                         .map((so) => {
                           const store = getStore(so.store_id) || state.stores[0];
-                          const latestTrack = so.tracking[so.tracking.length - 1];
-                          const currentLat = latestTrack?.latitude || store.latitude;
-                          const currentLon = latestTrack?.longitude || store.longitude;
-                          const remaining = haversineDistance(currentLat, currentLon, so.parentOrder.customer_lat, so.parentOrder.customer_lon);
+                          const trackingList = Array.isArray(so.tracking) ? so.tracking : [];
+                          const latestTrack = trackingList.length ? trackingList[trackingList.length - 1] : null;
+                          const currentLat = latestTrack?.latitude || store?.latitude || 23.7500;
+                          const currentLon = latestTrack?.longitude || store?.longitude || 90.3900;
+                          const custLat = so.parentOrder?.customer_lat || 23.7500;
+                          const custLon = so.parentOrder?.customer_lon || 90.3900;
+                          const remaining = haversineDistance(currentLat, currentLon, custLat, custLon);
                           return `
                         <div class="order-tracking-card" style="margin-bottom:20px;">
                           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -12185,6 +12364,27 @@
       } else if (route === 'order' || route === 'tracking' || route === 'order-tracking') {
         app.innerHTML = renderTrackingView(param);
       } else if (route === 'account') {
+        if (!state.activeRole || !state.currentUser) {
+          showToast('Please sign in to view your account dashboard.', 'info');
+          location.hash = '#/auth';
+          return;
+        }
+        if (state.activeRole === 'admin') {
+          location.hash = '#/dash/admin';
+          return;
+        }
+        if (state.activeRole === 'hatex' || state.activeRole === 'logistics') {
+          location.hash = '#/dash/hatex';
+          return;
+        }
+        if (state.activeRole === 'seller') {
+          location.hash = '#/dash/seller';
+          return;
+        }
+        if (state.activeRole === 'rider') {
+          location.hash = '#/dash/rider';
+          return;
+        }
         app.innerHTML = renderAccountView(param || 'profile');
       } else if (route === 'messages') {
         if (!state.activeRole) {
@@ -12216,11 +12416,55 @@
           app.innerHTML = renderWishlistTableView(false);
         }
       } else if (route === 'dash') {
-        if (param === 'seller') app.innerHTML = renderSellerDashView(subParam || 'overview');
-        else if (param === 'admin') app.innerHTML = renderAdminDashView(subParam || 'overview');
-        else if (param === 'hatex') app.innerHTML = renderHatexDashView(subParam || 'dashboard');
-        else if (param === 'rider') app.innerHTML = renderRiderView(subParam || 'dashboard');
-        else app.innerHTML = renderSellerDashView('overview');
+        const curRole = state.activeRole;
+        if (param === 'admin') {
+          if (curRole !== 'admin') {
+            showToast('Access Denied. HAAT Corporate Admin portal is restricted.', 'danger');
+            if (curRole === 'seller') location.hash = '#/dash/seller';
+            else if (curRole === 'hatex') location.hash = '#/dash/hatex';
+            else if (curRole === 'rider') location.hash = '#/dash/rider';
+            else if (curRole === 'customer') location.hash = '#/account';
+            else location.hash = '#/auth';
+            return;
+          }
+          app.innerHTML = renderAdminDashView(subParam || 'overview');
+        } else if (param === 'hatex') {
+          if (curRole !== 'hatex' && curRole !== 'logistics') {
+            showToast('Access Denied. HATEX Logistics Central hub is restricted.', 'danger');
+            if (curRole === 'seller') location.hash = '#/dash/seller';
+            else if (curRole === 'admin') location.hash = '#/dash/admin';
+            else if (curRole === 'rider') location.hash = '#/dash/rider';
+            else if (curRole === 'customer') location.hash = '#/account';
+            else location.hash = '#/auth';
+            return;
+          }
+          app.innerHTML = renderHatexDashView(subParam || 'dashboard');
+        } else if (param === 'seller') {
+          if (curRole !== 'seller') {
+            showToast('Access Denied. Merchant store portal is restricted to registered sellers.', 'warning');
+            if (curRole === 'admin') location.hash = '#/dash/admin';
+            else if (curRole === 'hatex') location.hash = '#/dash/hatex';
+            else if (curRole === 'rider') location.hash = '#/dash/rider';
+            else if (curRole === 'customer') location.hash = '#/account';
+            else location.hash = '#/auth';
+            return;
+          }
+          app.innerHTML = renderSellerDashView(subParam || 'overview');
+        } else if (param === 'rider') {
+          if (curRole !== 'rider') {
+            showToast('Access Denied. Delivery rider dashboard is restricted.', 'warning');
+            if (curRole === 'seller') location.hash = '#/dash/seller';
+            else if (curRole === 'admin') location.hash = '#/dash/admin';
+            else if (curRole === 'hatex') location.hash = '#/dash/hatex';
+            else if (curRole === 'customer') location.hash = '#/account';
+            else location.hash = '#/auth';
+            return;
+          }
+          app.innerHTML = renderRiderView(subParam || 'dashboard');
+        } else {
+          location.hash = '#/';
+          return;
+        }
       } else {
         app.innerHTML = renderHomeView();
         startBannerSliderTimer();

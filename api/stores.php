@@ -235,7 +235,8 @@ json_error('Method not allowed', 405);
 // ─────────────────────────────────────────────────────────
 function _add_store_urls(array $store): array {
     $id = $store['id'];
-    $store['logo_url']   = "/HAAT!/api/images.php?type=store_logo&id=$id";
-    $store['banner_url'] = "/HAAT!/api/images.php?type=store_banner&id=$id";
+    $base = api_base_url();
+    $store['logo_url']   = "$base/images.php?type=store_logo&id=$id";
+    $store['banner_url'] = "$base/images.php?type=store_banner&id=$id";
     return $store;
 }

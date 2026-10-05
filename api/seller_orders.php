@@ -74,8 +74,9 @@ if ($method === 'GET') {
         $iStmt = $db->prepare('SELECT * FROM order_items WHERE seller_order_id = ?');
         $iStmt->execute([$id]);
         $items = $iStmt->fetchAll();
+        $base = api_base_url();
         foreach ($items as &$it) {
-            $it['image_url'] = "/HAAT!/api/images.php?type=product&id={$it['product_id']}&n=1";
+            $it['image_url'] = "$base/images.php?type=product&id={$it['product_id']}&n=1";
         }
         $so['items'] = $items;
 
@@ -93,8 +94,8 @@ if ($method === 'GET') {
         json_ok($so);
     }
 
-    // Seller: list own seller orders
-    role_required(['seller', 'logistics']);
+    // Seller / HATEX / Rider / Admin: list seller orders
+    $user   = role_required(['seller', 'logistics', 'hatex', 'rider', 'admin']);
     $p      = paginate(15);
     $status = query('status', '');
 
@@ -115,26 +116,60 @@ if ($method === 'GET') {
              LIMIT {$p['limit']} OFFSET {$p['offset']}"
         );
         $stmt->execute($params);
-    } else {
-        // Logistics: orders assigned to them
-        $riderStmt = $db->prepare('SELECT id FROM riders WHERE user_id = ?');
-        $riderStmt->execute([$user['id']]);
-        $rider = $riderStmt->fetch();
-        if (!$rider) json_error('Rider profile not found', 404);
-
+    } elseif ($user['role'] === 'hatex' || $user['role'] === 'admin') {
+        // HATEX / Admin: all seller orders or by status
+        $where  = $status ? 'WHERE so.status = ?' : '';
+        $params = $status ? [$status] : [];
         $stmt = $db->prepare(
             "SELECT so.id, so.seller_order_number, so.status,
-                    so.seller_total, so.created_at,
+                    so.seller_total, so.created_at, so.assigned_rider_id,
                     o.order_number, o.shipping_name, o.district, o.division,
-                    s.store_name
+                    s.store_name, r.id AS rider_id, ru.name AS rider_name
              FROM seller_orders so
              JOIN orders o ON o.id = so.order_id
              JOIN stores s ON s.id = so.store_id
-             WHERE so.assigned_rider_id = ?
+             LEFT JOIN riders r ON r.id = so.assigned_rider_id
+             LEFT JOIN users ru ON ru.id = r.user_id
+             $where
              ORDER BY so.created_at DESC
              LIMIT {$p['limit']} OFFSET {$p['offset']}"
         );
-        $stmt->execute([$rider['id']]);
+        $stmt->execute($params);
+    } else {
+        // Rider: orders assigned to them
+        $riderStmt = $db->prepare('SELECT id FROM riders WHERE user_id = ?');
+        $riderStmt->execute([$user['id']]);
+        $rider = $riderStmt->fetch();
+
+        if ($rider) {
+            $stmt = $db->prepare(
+                "SELECT so.id, so.seller_order_number, so.status,
+                        so.seller_total, so.created_at,
+                        o.order_number, o.shipping_name, o.district, o.division,
+                        s.store_name
+                 FROM seller_orders so
+                 JOIN orders o ON o.id = so.order_id
+                 JOIN stores s ON s.id = so.store_id
+                 WHERE so.assigned_rider_id = ?
+                 ORDER BY so.created_at DESC
+                 LIMIT {$p['limit']} OFFSET {$p['offset']}"
+            );
+            $stmt->execute([$rider['id']]);
+        } else {
+            // Unassigned rider pool
+            $stmt = $db->prepare(
+                "SELECT so.id, so.seller_order_number, so.status,
+                        so.seller_total, so.created_at,
+                        o.order_number, o.shipping_name, o.district, o.division,
+                        s.store_name
+                 FROM seller_orders so
+                 JOIN orders o ON o.id = so.order_id
+                 JOIN stores s ON s.id = so.store_id
+                 ORDER BY so.created_at DESC
+                 LIMIT {$p['limit']} OFFSET {$p['offset']}"
+            );
+            $stmt->execute();
+        }
     }
 
     json_ok(['seller_orders' => $stmt->fetchAll(), 'page' => $p['page']]);
@@ -155,7 +190,7 @@ if ($method === 'PUT') {
     // Seller can only update their own
     if ($user['role'] === 'seller' && (int) $so['seller_user_id'] !== $user['id']) {
         json_error('Forbidden', 403);
-    } elseif (!in_array($user['role'], ['seller','admin','logistics'])) {
+    } elseif (!in_array($user['role'], ['seller','admin','logistics','hatex','rider'])) {
         json_error('Forbidden', 403);
     }
 
@@ -230,7 +265,7 @@ if ($method === 'PUT') {
             $chkParent->execute([$so['order_id']]);
             $pRow = $chkParent->fetch();
             if ($pRow && (int)$pRow['total'] === (int)$pRow['delivered_cnt']) {
-                $db->prepare("UPDATE orders SET status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$so['order_id']]);
+                $db->prepare("UPDATE orders SET order_status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$so['order_id']]);
             }
         }
 

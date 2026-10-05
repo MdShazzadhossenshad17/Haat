@@ -13,7 +13,10 @@
 (function () {
   'use strict';
 
-  const BASE = '/HAAT!/api';
+  const BASE = (function () {
+    const p = window.location.pathname.replace(/\/index\.html$/i, '').replace(/\/+$/, '');
+    return (p ? p : '') + '/api';
+  })();
 
   /* ── HTTP helpers ────────────────────────────────────────────────────────── */
   async function api(ep, opts = {}) {
@@ -229,17 +232,22 @@
      ═══════════════════════════════════════════════════════════════════════════ */
   async function syncCustomerOrders(userId) {
     const r = await apiGet('/orders.php');
-    if (r.ok && Array.isArray(r.data.orders) && r.data.orders.length) {
-      for (const summary of r.data.orders) {
-        const detail = await apiGet(`/orders.php?id=${summary.id}`);
-        if (detail.ok && detail.data.id) {
-          const fullOrder = detail.data;
-          const idx = (window.state.orders || []).findIndex(o => String(o.id) === String(fullOrder.id));
-          if (idx >= 0) window.state.orders[idx] = { ...window.state.orders[idx], ...fullOrder };
-          else window.state.orders.unshift(fullOrder);
+    if (r.ok && Array.isArray(r.data.orders)) {
+      if (r.data.orders.length === 0) {
+        window.state.orders = (window.state.orders || []).filter(o => String(o.user_id) !== String(userId));
+      } else {
+        for (const summary of r.data.orders) {
+          const detail = await apiGet(`/orders.php?id=${summary.id}`);
+          if (detail.ok && detail.data.id) {
+            const fullOrder = detail.data;
+            const idx = (window.state.orders || []).findIndex(o => String(o.id) === String(fullOrder.id));
+            if (idx >= 0) window.state.orders[idx] = { ...window.state.orders[idx], ...fullOrder };
+            else window.state.orders.unshift(fullOrder);
+          }
         }
       }
       if (window.persist) window.persist();
+      if (typeof window.render === 'function') window.render();
     }
   }
 
@@ -443,6 +451,12 @@
         if (typeof window.render === 'function') window.render();
         return;
       } else {
+        if (r.status === 401 && r.data && r.data.error) {
+          if (typeof window.showToast === 'function') {
+            window.showToast(r.data.error, 'warning');
+          }
+          return;
+        }
         _origLogin.call(this, form);
       }
     };
@@ -484,7 +498,7 @@
         payload.category = fd.get('category') || 'Fashion & Apparel';
         payload.address = (fd.get('address') || 'Shop 8, New Market').trim();
         payload.district = fd.get('district') || 'Dhaka';
-        payload.division = fd.get('district') || 'Dhaka';
+        payload.division = fd.get('division') || fd.get('district') || 'Dhaka';
       } else if (regRole === 'customer') {
         payload.address = (fd.get('address') || 'House 14, Road 3, Dhanmondi').trim();
         payload.district = fd.get('district') || 'Dhaka';
@@ -540,7 +554,7 @@
             auto_greeting: `Assalamu Alaikum! Welcome to ${st.store_name}.`,
             status: 'active',
             is_published: 1,
-            verification_status: 'unverified'
+            verification_status: 'verified'
           };
           if (storeIdx >= 0) window.state.stores[storeIdx] = newStoreObj;
           else window.state.stores.push(newStoreObj);
@@ -566,7 +580,10 @@
         window.state.activeRole = u.role;
         window.state.currentUserId = u.id;
         window.state.currentUser = newUserObj;
-        if (st) window.state.currentUser.name = st.store_name;
+        if (st) {
+          window.state.currentUser.name = st.store_name;
+          window.state.currentUser.store_id = st.id;
+        }
 
         if (!window.state.collectedCouponsByUser) window.state.collectedCouponsByUser = {};
         window.state.collectedCouponsByUser[String(u.id)] = [];
@@ -574,6 +591,15 @@
         window.state.cartByUser[String(u.id)] = [];
         if (!window.state.wishlistByUser) window.state.wishlistByUser = {};
         window.state.wishlistByUser[String(u.id)] = [];
+        window.state.activeChatChannel = null;
+
+        if (u.role === 'customer') {
+          syncCustomerOrders(u.id);
+          syncWishlist(u.id);
+          syncAddresses(u.id);
+        } else if (u.role === 'seller' && st) {
+          syncSellerOrders(st.id);
+        }
 
         if (window.persist) window.persist();
 
@@ -594,6 +620,12 @@
         }
         return;
       } else {
+        if (r.data && r.data.error) {
+          if (typeof window.showToast === 'function') {
+            window.showToast(r.data.error, 'danger');
+          }
+          return;
+        }
         _origReg.call(this, form);
       }
     };
@@ -631,27 +663,57 @@
     const _origOrder = window.handlePlaceOrder;
     if (_origOrder) {
       window.handlePlaceOrder = async function (form) {
+        const cartSnapshot = (window.state.cart || []).map(c => ({ ...c }));
+        const fd = form ? new FormData(form) : null;
+        const shippingName = fd ? (fd.get('shipping_name') || '').trim() : '';
+        const shippingPhone = fd ? (fd.get('shipping_phone') || '').trim() : '';
+        const shippingAddress = fd ? (fd.get('shipping_address') || '').trim() : '';
+        const district = fd ? (fd.get('district') || 'Dhaka') : 'Dhaka';
+        const division = fd ? (fd.get('division') || 'Dhaka') : 'Dhaka';
+        const postalCode = fd ? (fd.get('postal_code') || '1205') : '1205';
+        const paymentMethod = (fd && fd.get('payment_method')) || window.state.selectedPaymentMethod || 'cash_on_delivery';
+
         _origOrder.call(this, form);
-        const apiUserId = localStorage.getItem('HAAT_API_USER_ID');
-        if (!apiUserId) return;
-        const cart = window.state.cart || [];
-        if (!cart.length) return;
+
+        const apiUserId = localStorage.getItem('HAAT_API_USER_ID') || (window.state.currentUser ? String(window.state.currentUser.id) : null);
+        if (!apiUserId || !cartSnapshot.length) return;
+
         const addr = (window.state.addresses || []).find(a => String(a.user_id) === String(apiUserId) && a.is_default) || {};
-        await apiPost('/orders.php', {
-          payment_method:   window.state.selectedPaymentMethod || 'cash_on_delivery',
-          shipping_name:    addr.name     || window.state.currentUser?.name || '',
-          shipping_phone:   addr.phone    || window.state.currentUser?.phone || '',
-          shipping_address: addr.address  || '',
-          district:         addr.district || 'Dhaka',
-          division:         addr.division || 'Dhaka',
-          postal_code:      addr.postal_code || '',
-          items: cart.map(c => ({
+        const postData = {
+          payment_method: paymentMethod,
+          shipping_name: shippingName || addr.name || window.state.currentUser?.name || 'Customer',
+          shipping_phone: shippingPhone || addr.phone || window.state.currentUser?.phone || '01700000000',
+          shipping_address: shippingAddress || addr.address || 'Dhaka',
+          district: district || addr.district || 'Dhaka',
+          division: division || addr.division || 'Dhaka',
+          postal_code: postalCode || addr.postal_code || '1205',
+          items: cartSnapshot.map(c => ({
             product_id: c.product_id,
             quantity: c.quantity || 1,
             variant_name: c.variant_name || null,
             variant_value: c.variant_value || null,
           })),
-        }).catch(() => {});
+        };
+        if (window.state.appliedCoupon?.code) {
+          postData.coupon_code = window.state.appliedCoupon.code;
+        }
+
+        const res = await apiPost('/orders.php', postData);
+        if (res.ok && res.data.order_id) {
+          const placed = window.state.orders[0];
+          if (placed) {
+            const oldNum = placed.order_number;
+            placed.id = res.data.order_id;
+            placed.order_number = res.data.order_number;
+            if (Array.isArray(placed.seller_orders)) {
+              placed.seller_orders.forEach(so => { so.order_id = res.data.order_id; });
+            }
+            if (location.hash && location.hash.includes(oldNum)) {
+              location.hash = `#/order/${res.data.order_number}`;
+            }
+          }
+          if (window.persist) window.persist();
+        }
       };
     }
 
@@ -739,6 +801,106 @@
         } catch (e) {
           console.warn('[HAAT Bridge] Review API sync error:', e);
         }
+      };
+    }
+
+    /* Seller Store Profile Updates → Sync to MySQL */
+    const _origSaveStore = window.handleSaveStore;
+    if (_origSaveStore) {
+      window.handleSaveStore = async function (form) {
+        _origSaveStore.call(this, form);
+        const fd = new FormData(form);
+        const store = (typeof window.getSellerOwnStore === 'function' ? window.getSellerOwnStore() : null) || window.state.stores[0];
+        if (store && store.id) {
+          await apiPut('/stores.php', {
+            store_name: fd.get('store_name'),
+            description: fd.get('description'),
+            address: fd.get('address'),
+            district: fd.get('district'),
+            division: fd.get('division'),
+            delivery_charge: parseFloat(fd.get('delivery_charge')) || 0,
+            free_delivery: fd.get('free_delivery') ? 1 : 0,
+            auto_greeting: (fd.get('auto_greeting') || '').trim()
+          }).catch(() => {});
+        }
+      };
+    }
+
+    /* User Profile Changes → Sync to MySQL */
+    const _origUpdateProf = window.handleUpdateProfile;
+    if (_origUpdateProf) {
+      window.handleUpdateProfile = async function (form) {
+        _origUpdateProf.call(this, form);
+        const fd = new FormData(form);
+        await apiPut('/users.php', {
+          name: fd.get('name'),
+          phone: fd.get('phone')
+        }).catch(() => {});
+      };
+    }
+
+    /* Customer Address Management → Sync to MySQL */
+    const _origAddAddress = window.handleAddAddress;
+    if (_origAddAddress) {
+      window.handleAddAddress = async function (form) {
+        const fd = new FormData(form);
+        _origAddAddress.call(this, form);
+        const r = await apiPost('/addresses.php', {
+          label: fd.get('label') || 'Home',
+          name: fd.get('name'),
+          phone: fd.get('phone'),
+          address: fd.get('address'),
+          district: fd.get('district'),
+          division: fd.get('division'),
+          postal_code: fd.get('postal_code') || '1205',
+          is_default: 0
+        }).catch(() => {});
+        if (r && r.ok && r.data.id) {
+          const added = window.state.addresses[window.state.addresses.length - 1];
+          if (added) added.id = r.data.id;
+          if (window.persist) window.persist();
+        }
+      };
+    }
+
+    const _origDelAddress = window.deleteAddress;
+    if (_origDelAddress) {
+      window.deleteAddress = function (addressId) {
+        _origDelAddress.call(this, addressId);
+        apiDel(`/addresses.php?id=${addressId}`).catch(() => {});
+      };
+    }
+
+    /* HATEX Rider Assignment & Status Transitions → Sync to MySQL */
+    const _origAssignRider = window.assignRider;
+    if (_origAssignRider) {
+      window.assignRider = function (sellerOrderId, riderId) {
+        _origAssignRider.call(this, sellerOrderId, riderId);
+        apiPut(`/seller_orders.php?id=${sellerOrderId}`, {
+          assigned_rider_id: riderId,
+          status: 'shipped'
+        }).catch(() => {});
+        apiPost('/delivery.php', {
+          seller_order_id: sellerOrderId,
+          status: 'picked_up',
+          location: 'HATEX Central Sorting Hub',
+          note: 'Assigned delivery rider'
+        }).catch(() => {});
+      };
+    }
+
+    const _origAdvanceRider = window.advanceRiderStatus;
+    if (_origAdvanceRider) {
+      window.advanceRiderStatus = function (sellerOrderId, newStatus) {
+        _origAdvanceRider.call(this, sellerOrderId, newStatus);
+        const loc = newStatus === 'delivered' ? 'Customer Doorstep' : 'In Transit Waypoint';
+        apiPut(`/seller_orders.php?id=${sellerOrderId}`, { status: newStatus }).catch(() => {});
+        apiPost('/delivery.php', {
+          seller_order_id: sellerOrderId,
+          status: newStatus,
+          location: loc,
+          note: `Status updated to ${newStatus}`
+        }).catch(() => {});
       };
     }
   }
@@ -921,6 +1083,20 @@
         syncAddresses(u.id);
       } else if (u.role === 'seller' && stRow) {
         syncSellerOrders(stRow.id);
+      } else if (u.role === 'admin') {
+        const uRes = await apiGet('/users.php?limit=50');
+        if (uRes.ok && Array.isArray(uRes.data?.users)) {
+          const dbUsers = uRes.data.users.map(ux => ({
+            id: ux.id,
+            name: ux.name,
+            email: ux.email,
+            phone: ux.phone || '',
+            role: ux.role,
+            status: ux.status || 'active'
+          }));
+          const existingIds = new Set(dbUsers.map(x => x.id));
+          st.users = [...dbUsers, ...(st.users || []).filter(x => !existingIds.has(x.id))];
+        }
       }
     }
 

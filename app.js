@@ -4061,44 +4061,64 @@
     render();
   };
 
-  function canCustomerReviewProduct(productId) {
+  function canCustomerReviewProduct(productId, orderNumber) {
     if (!state.activeRole || state.activeRole !== 'customer' || !state.currentUser) {
       return { eligible: false, reason: 'Please log in to your customer account to submit a review.' };
     }
     const currentUserId = state.currentUser.id;
-    const userOrders = (state.orders || []).filter(
-      (o) => o.user_id === currentUserId || o.shipping_phone === state.currentUser.phone
-    );
+    const userPhone = state.currentUser.phone ? String(state.currentUser.phone).trim() : '';
+    const userEmail = state.currentUser.email ? String(state.currentUser.email).trim().toLowerCase() : '';
 
-    const ordersWithProduct = userOrders.filter((o) => {
-      const inSellerOrders = (o.seller_orders || []).some((so) =>
-        (so.items || []).some((it) => Number(it.product_id) === Number(productId))
-      );
-      const inDirectItems = (o.items || []).some((it) => Number(it.product_id) === Number(productId));
-      return inSellerOrders || inDirectItems;
+    const userOrders = (state.orders || []).filter((o) => {
+      const matchId = o.user_id && currentUserId && String(o.user_id) === String(currentUserId);
+      const matchPhone = userPhone && o.shipping_phone && String(o.shipping_phone).trim() === userPhone;
+      const matchEmail = userEmail && o.shipping_email && String(o.shipping_email).trim().toLowerCase() === userEmail;
+      return matchId || matchPhone || matchEmail;
     });
 
-    if (!ordersWithProduct.length) {
+    if (!userOrders.length) {
       return {
         eligible: false,
         reason: 'Only customers who have ordered and received this product can write a review.'
       };
     }
 
-    const deliveredOrder = ordersWithProduct.find(
-      (o) =>
-        o.order_status === 'delivered' ||
-        (o.seller_orders || []).some(
-          (so) =>
-            so.status === 'delivered' &&
-            (so.items || []).some((it) => Number(it.product_id) === Number(productId))
-        )
-    );
+    let ordersWithProduct = userOrders;
+    if (productId) {
+      ordersWithProduct = userOrders.filter((o) => {
+        const inSellerOrders = (o.seller_orders || []).some((so) =>
+          (so.items || []).some((it) => Number(it.product_id) === Number(productId))
+        );
+        const inDirectItems = (o.items || []).some((it) => Number(it.product_id) === Number(productId));
+        return inSellerOrders || inDirectItems;
+      });
+      if (!ordersWithProduct.length) {
+        return {
+          eligible: false,
+          reason: 'Only customers who have ordered and received this product can write a review.'
+        };
+      }
+    }
+
+    if (orderNumber) {
+      const matched = ordersWithProduct.filter((o) => o.order_number === orderNumber);
+      if (matched.length) ordersWithProduct = matched;
+    }
+
+    const deliveredOrder = ordersWithProduct.find((o) => {
+      if (o.order_status === 'delivered') return true;
+      if (Array.isArray(o.seller_orders) && o.seller_orders.length > 0) {
+        if (o.seller_orders.every((so) => so.status === 'delivered')) return true;
+        if (productId && o.seller_orders.some((so) => so.status === 'delivered' && (so.items || []).some((it) => Number(it.product_id) === Number(productId)))) return true;
+        if (!productId && o.seller_orders.some((so) => so.status === 'delivered')) return true;
+      }
+      return false;
+    });
 
     if (!deliveredOrder) {
       return {
         eligible: false,
-        reason: 'You can write a review once your order has been successfully delivered by HATEX.'
+        reason: 'You can write a review once your order has been successfully delivered by HATEX or confirmed as received.'
       };
     }
 
@@ -5552,9 +5572,14 @@
       so.assigned_rider_id != null || ['assigned_to_rider', 'out_for_delivery', 'in_transit', 'delivered'].includes(so.status)
     );
 
-    if (allPackaged && currentStepIdx < 1) currentStepIdx = 1;
-    if (anyAssignedRider && currentStepIdx < 3) currentStepIdx = 3;
-    if (anyOutForDelivery && currentStepIdx < 4) currentStepIdx = 4;
+    const allDelivered = totalSellers > 0 && sellerOrdersList.every((so) => so.status === 'delivered');
+    if (allDelivered || order.order_status === 'delivered') {
+      currentStepIdx = 5;
+    } else {
+      if (allPackaged && currentStepIdx < 1) currentStepIdx = 1;
+      if (anyAssignedRider && currentStepIdx < 3) currentStepIdx = 3;
+      if (anyOutForDelivery && currentStepIdx < 4) currentStepIdx = 4;
+    }
 
     // Determine assigned rider if any
     const assignedRiderId = sellerOrdersList.find((so) => so.assigned_rider_id)?.assigned_rider_id || (currentStepIdx >= 3 ? 1 : null);
@@ -5745,10 +5770,19 @@
                   : `<span style="font-size:12px;color:#64748B;background:#F8FAFC;padding:8px 12px;border-radius:6px;border:1px dashed #CBD5E1;"><i class="bi bi-bicycle"></i> Rider chat unlocks automatically once a delivery rider is assigned</span>`
               }
               ${
+                state.activeRole === 'customer' && currentStepIdx < 5
+                  ? `
+                <button type="button" class="btn-village-primary" style="padding:9px 18px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;background:#15803D;border-color:#15803D;" onclick="window.confirmOrderReceived('${esc(order.order_number)}')">
+                  <i class="bi bi-check-circle-fill"></i> Confirm Received
+                </button>
+              `
+                  : ''
+              }
+              ${
                 currentStepIdx === 5 && state.activeRole === 'customer'
                   ? `
-                <button type="button" class="btn-village-primary" style="padding:9px 20px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;" onclick="window.openReviewModal ? window.openReviewModal() : showToast('Thank you for rating!', 'success')">
-                  <i class="bi bi-star-fill"></i> Rate & Review Products
+                <button type="button" class="btn-village-primary" style="padding:9px 20px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;background:#D97706;border-color:#D97706;" onclick="window.openReviewModal(null, '${esc(order.order_number)}')">
+                  <i class="bi bi-star-fill text-warning"></i> Rate & Review Products
                 </button>
               `
                   : ''
@@ -5772,6 +5806,7 @@
               .map((so) => {
                 const store = getStore(so.store_id) || state.stores[0];
                 const rider = so.assigned_rider_id ? state.riders.find((r) => r.id === Number(so.assigned_rider_id)) : null;
+                const isPackDelivered = so.status === 'delivered' || order.order_status === 'delivered';
                 return `
                   <div style="border:1px solid #E2E8F0;border-radius:8px;padding:14px;background:#F8FAFC;">
                     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0;margin-bottom:10px;">
@@ -5787,9 +5822,16 @@
                     ${(so.items || [])
                       .map(
                         (it) => `
-                      <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;">
-                        <span>• <strong>${esc(it.product_name)}</strong> (${esc(it.variant_name)}: ${esc(it.variant_value)}) × ${it.quantity}</span>
-                        <strong>${money(it.subtotal)}</strong>
+                      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px;">
+                        <span>• <strong>${esc(it.product_name)}</strong> (${esc(it.variant_name || 'Standard')}: ${esc(it.variant_value || 'Default')}) × ${it.quantity}</span>
+                        <div style="display:flex;align-items:center;gap:10px;">
+                          <strong>${money(it.subtotal)}</strong>
+                          ${
+                            isPackDelivered && state.activeRole === 'customer'
+                              ? `<button type="button" class="btn-village-outline" style="padding:3px 8px;font-size:11px;font-weight:700;color:#D97706;border-color:#F59E0B;background:#FFFBEB;" onclick="window.openReviewModal(${it.product_id}, '${esc(order.order_number)}')"><i class="bi bi-star-fill text-warning"></i> Review</button>`
+                              : ''
+                          }
+                        </div>
                       </div>
                     `
                       )
@@ -6369,11 +6411,26 @@
                                 <td><span class="status-badge ${effStatus}">${esc(effStatus.replace(/_/g, ' '))}</span></td>
                                 <td style="white-space:nowrap;display:flex;gap:6px;align-items:center;">
                                   <button type="button" class="btn-village-primary" onclick="window.viewCustomerOrderDetails('${esc(o.order_number)}')" style="padding:5px 12px;font-size:11.5px;font-weight:700;">
-                                    <i class="bi bi-file-earmark-text"></i> Order Details
+                                    <i class="bi bi-file-earmark-text"></i> Details
                                   </button>
                                   <a href="#/order/${esc(o.order_number)}" class="btn-secondary" style="padding:5px 10px;font-size:11.5px;font-weight:700;border-radius:4px;text-decoration:none;">
-                                    <i class="bi bi-truck"></i> Track / Chat
+                                    <i class="bi bi-truck"></i> Track
                                   </a>
+                                  ${
+                                    effStatus === 'delivered'
+                                      ? `
+                                    <button type="button" class="btn-village-outline" onclick="window.openReviewModal(null, '${esc(o.order_number)}')" style="padding:5px 10px;font-size:11.5px;font-weight:700;color:#D97706;border-color:#F59E0B;background:#FFFBEB;">
+                                      <i class="bi bi-star-fill text-warning"></i> Review
+                                    </button>
+                                  `
+                                      : ['shipped', 'out_for_delivery', 'in_transit'].includes(effStatus)
+                                      ? `
+                                    <button type="button" class="btn-village-primary" onclick="window.confirmOrderReceived('${esc(o.order_number)}')" style="padding:5px 10px;font-size:11.5px;font-weight:700;background:#15803D;border-color:#15803D;">
+                                      <i class="bi bi-check2-circle"></i> Received
+                                    </button>
+                                  `
+                                      : ''
+                                  }
                                 </td>
                               </tr>
                             `;
@@ -6605,6 +6662,9 @@
       allItems.push(...o.items);
     }
 
+    const isOrderDelivered = o.order_status === 'delivered' || (Array.isArray(o.seller_orders) && o.seller_orders.length > 0 && o.seller_orders.every(so => so.status === 'delivered'));
+    const anyDelivered = isOrderDelivered || (Array.isArray(o.seller_orders) && o.seller_orders.some(so => so.status === 'delivered'));
+
     openModal(`
       <div style="padding:4px 0;">
         <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #F1F5F9;padding-bottom:12px;margin-bottom:16px;">
@@ -6614,6 +6674,16 @@
           </div>
           <span class="status-badge ${o.order_status}" style="font-size:12px;padding:4px 10px;">${esc(o.order_status.replace(/_/g, ' ').toUpperCase())}</span>
         </div>
+
+        ${!isOrderDelivered && state.activeRole === 'customer' ? `
+          <div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <div>
+              <strong style="font-size:12.5px;color:#15803D;"><i class="bi bi-box2-heart-fill"></i> Received your package?</strong>
+              <div style="font-size:11.5px;color:#166534;">Confirm receipt to complete the order and write verified reviews for your items.</div>
+            </div>
+            <button type="button" class="btn-village-primary" style="padding:6px 14px;font-size:12px;font-weight:700;background:#15803D;border-color:#15803D;white-space:nowrap;" onclick="closeModal(); window.confirmOrderReceived('${esc(o.order_number)}');">Confirm Received</button>
+          </div>
+        ` : ''}
 
         <!-- Customer & Delivery Destination Card -->
         <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -6641,7 +6711,7 @@
                   <th>Quantity</th>
                   <th>Unit Price</th>
                   <th>Total</th>
-                  ${o.order_status === 'delivered' ? '<th>Review</th>' : ''}
+                  ${anyDelivered ? '<th>Review</th>' : ''}
                 </tr>
               </thead>
               <tbody>
@@ -6663,8 +6733,8 @@
                       <td>${money(it.unit_price)}</td>
                       <td><strong style="color:var(--haat-orange);">${money(it.subtotal || it.unit_price * it.quantity)}</strong></td>
                       ${
-                        o.order_status === 'delivered'
-                          ? `<td><button type="button" class="btn-village-primary" style="padding:4px 8px;font-size:11px;" onclick="closeModal(); window.openReviewModal(${it.product_id})"><i class="bi bi-star"></i> Review</button></td>`
+                        anyDelivered || it.so_status === 'delivered'
+                          ? `<td><button type="button" class="btn-village-outline" style="padding:4px 9px;font-size:11.5px;font-weight:700;color:#D97706;border-color:#F59E0B;background:#FFFBEB;" onclick="closeModal(); window.openReviewModal(${it.product_id}, '${esc(o.order_number)}')"><i class="bi bi-star-fill text-warning"></i> Review</button></td>`
                           : ''
                       }
                     </tr>
@@ -11692,7 +11762,51 @@
     `);
   };
 
-  window.openReviewModal = function (productId) {
+  window.confirmOrderReceived = async function (orderNumber) {
+    const o = (state.orders || []).find((ord) => ord.order_number === orderNumber);
+    if (!o) {
+      showToast('Order not found.', 'error');
+      return;
+    }
+    if (!confirm(`Confirm that you have received your package for Order #${orderNumber}?`)) {
+      return;
+    }
+
+    o.order_status = 'delivered';
+    if (Array.isArray(o.seller_orders)) {
+      o.seller_orders.forEach((so) => {
+        so.status = 'delivered';
+        if (!Array.isArray(so.tracking)) so.tracking = [];
+        so.tracking.push({
+          id: Date.now(),
+          status: 'delivered',
+          location: 'Customer Address',
+          note: 'Customer confirmed order receipt.',
+          created_at: new Date().toLocaleTimeString()
+        });
+      });
+    }
+    persist();
+    render();
+
+    // Sync to backend via API
+    try {
+      if (typeof window.apiPut === 'function' && o.id) {
+        await window.apiPut(`/orders.php?id=${o.id}`, { order_status: 'delivered' });
+      }
+    } catch (err) {
+      console.warn('Sync delivery status error:', err);
+    }
+
+    showToast('Order confirmed as received! You can now review your items.', 'success');
+
+    // Automatically open review modal for the delivered items!
+    const firstItem = (o.seller_orders && o.seller_orders[0]?.items && o.seller_orders[0].items[0]) || (o.items && o.items[0]);
+    const pid = firstItem?.product_id;
+    window.openReviewModal(pid, orderNumber);
+  };
+
+  window.openReviewModal = function (productId, orderNumber) {
     if (!state.activeRole) {
       showToast('Please log in to your customer account to write a review.', 'info');
       location.hash = '#/auth';
@@ -11702,20 +11816,70 @@
       showToast('Sellers are not permitted to submit product reviews.', 'warning');
       return;
     }
-    const eligibility = canCustomerReviewProduct(productId);
+
+    // If productId is not explicitly passed, find eligible delivered product from orderNumber or user's delivered orders
+    if (!productId) {
+      const userOrders = (state.orders || []).filter((o) => {
+        const matchId = o.user_id && state.currentUser?.id && String(o.user_id) === String(state.currentUser.id);
+        const matchPhone = state.currentUser?.phone && o.shipping_phone && String(o.shipping_phone).trim() === String(state.currentUser.phone).trim();
+        return matchId || matchPhone;
+      });
+      const targetOrder = orderNumber ? userOrders.find((o) => o.order_number === orderNumber) : userOrders.find((o) => o.order_status === 'delivered' || (o.seller_orders || []).some(so => so.status === 'delivered'));
+      if (targetOrder) {
+        const items = [];
+        (targetOrder.seller_orders || []).forEach(so => (so.items || []).forEach(it => {
+          if (it.product_id && !items.some(x => Number(x.product_id) === Number(it.product_id))) items.push(it);
+        }));
+        (targetOrder.items || []).forEach(it => {
+          if (it.product_id && !items.some(x => Number(x.product_id) === Number(it.product_id))) items.push(it);
+        });
+        if (items.length > 0) {
+          productId = items[0].product_id;
+          if (!orderNumber) orderNumber = targetOrder.order_number;
+        }
+      }
+    }
+
+    const eligibility = canCustomerReviewProduct(productId, orderNumber);
     if (!eligibility.eligible) {
       showToast(eligibility.reason, 'warning');
       return;
     }
+
+    const targetOrder = eligibility.order;
+    const availableItems = [];
+    if (targetOrder) {
+      (targetOrder.seller_orders || []).forEach(so => (so.items || []).forEach(it => {
+        if (it.product_id && !availableItems.some(x => Number(x.product_id) === Number(it.product_id))) {
+          availableItems.push(it);
+        }
+      }));
+      (targetOrder.items || []).forEach(it => {
+        if (it.product_id && !availableItems.some(x => Number(x.product_id) === Number(it.product_id))) {
+          availableItems.push(it);
+        }
+      });
+    }
+
     const p = getProduct(productId);
+    const productName = p?.name || availableItems.find(it => Number(it.product_id) === Number(productId))?.product_name || 'Purchased Product';
+
     openModal(`
       <h3 style="font-size:18px;font-weight:800;margin-bottom:8px;"><i class="bi bi-star-fill text-warning"></i> Write Verified Product Review</h3>
-      <p style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px;">Reviewing: <strong>${esc(p?.name || 'Product')}</strong></p>
+      <p style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px;">Reviewing: <strong>${esc(productName)}</strong></p>
       <div style="background:#F0FDF4;border:1px solid #86EFAC;color:#15803D;padding:8px 12px;border-radius:6px;font-size:11.5px;margin-bottom:14px;display:flex;align-items:center;gap:6px;">
         <i class="bi bi-patch-check-fill" style="font-size:15px;"></i>
-        <span>Verified Purchase: Delivered via HATEX (${eligibility.order ? `Order #${esc(eligibility.order.order_number)}` : 'Verified'})</span>
+        <span>Verified Purchase: Delivered via HATEX (${targetOrder ? `Order #${esc(targetOrder.order_number)}` : 'Verified'})</span>
       </div>
       <form onsubmit="event.preventDefault(); window.handleSubmitReview(this, ${productId});">
+        ${availableItems.length > 1 ? `
+          <div style="margin-bottom:12px;">
+            <label style="font-size:12px;font-weight:700;">Select Purchased Product</label>
+            <select name="product_id" style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;font-size:12.5px;" onchange="window.openReviewModal(Number(this.value), '${esc(targetOrder?.order_number || '')}')">
+              ${availableItems.map(it => `<option value="${it.product_id}" ${Number(it.product_id) === Number(productId) ? 'selected' : ''}>${esc(it.product_name)}</option>`).join('')}
+            </select>
+          </div>
+        ` : `<input type="hidden" name="product_id" value="${productId}">`}
         <div style="margin-bottom:12px;">
           <label style="font-size:12px;font-weight:700;">Star Rating (1 to 5)</label>
           <select name="rating" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
@@ -11746,17 +11910,18 @@
       closeModal();
       return;
     }
-    const eligibility = canCustomerReviewProduct(productId);
+    const fd = new FormData(form);
+    const pid = Number(productId || fd.get('product_id'));
+    const eligibility = canCustomerReviewProduct(pid);
     if (!eligibility.eligible) {
       showToast(eligibility.reason, 'warning');
       closeModal();
       return;
     }
-    const fd = new FormData(form);
     const revRating = parseInt(fd.get('rating') || 5);
     const newRev = {
       id: state.reviews.length + 1,
-      product_id: productId,
+      product_id: pid,
       user_id: state.currentUser?.id || 1,
       user_name: state.currentUser?.name || 'Customer',
       rating: revRating,
@@ -11765,11 +11930,19 @@
       verified_purchase: 1,
       created_at: new Date().toISOString().slice(0, 10)
     };
-    state.reviews.unshift(newRev);
+
+    const existingIdx = state.reviews.findIndex(
+      (r) => Number(r.product_id) === pid && String(r.user_id) === String(state.currentUser?.id)
+    );
+    if (existingIdx >= 0) {
+      state.reviews[existingIdx] = { ...state.reviews[existingIdx], ...newRev };
+    } else {
+      state.reviews.unshift(newRev);
+    }
 
     // Dynamically recalculate product rating & reviews_count in state.products
-    const prodReviews = state.reviews.filter((r) => r.product_id === productId);
-    const targetProd = state.products.find((p) => p.id === productId);
+    const prodReviews = state.reviews.filter((r) => Number(r.product_id) === pid);
+    const targetProd = state.products.find((p) => Number(p.id) === pid);
     if (targetProd) {
       targetProd.reviews_count = prodReviews.length;
       const sum = prodReviews.reduce((acc, r) => acc + Number(r.rating || 0), 0);

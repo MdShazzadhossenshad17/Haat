@@ -788,13 +788,14 @@
     if (_origSubmitRev) {
       window.handleSubmitReview = async function (form, productId) {
         const fd = new FormData(form);
+        const targetPid = Number(productId || fd.get('product_id'));
         const rating = parseInt(fd.get('rating') || 5);
         const comment = fd.get('comment') || '';
-        _origSubmitRev.call(this, form, productId);
+        _origSubmitRev.call(this, form, targetPid);
 
         try {
           await apiPost('/reviews.php', {
-            product_id: productId,
+            product_id: targetPid,
             rating: rating,
             comment: comment
           });

@@ -86,21 +86,35 @@ if ($method === 'POST') {
 
     if ($rating < 1 || $rating > 5) json_error('Rating must be 1-5', 422);
 
-    // Check purchased
+    // Check purchased & delivered
+    $uStmt = $db->prepare('SELECT phone, email FROM users WHERE id = ?');
+    $uStmt->execute([$user['id']]);
+    $uInfo = $uStmt->fetch();
+    $uPhone = !empty($uInfo['phone']) ? $uInfo['phone'] : null;
+    $uEmail = !empty($uInfo['email']) ? $uInfo['email'] : null;
+
     $purch = $db->prepare(
         "SELECT oi.id FROM order_items oi
          JOIN seller_orders so ON so.id = oi.seller_order_id
          JOIN orders o ON o.id = so.order_id
-         WHERE o.user_id = ? AND oi.product_id = ? AND so.status = 'delivered'
+         WHERE (o.user_id = ? OR (? IS NOT NULL AND o.shipping_phone = ?) OR (? IS NOT NULL AND o.shipping_email = ?))
+           AND oi.product_id = ?
+           AND (so.status = 'delivered' OR o.order_status = 'delivered')
          LIMIT 1"
     );
-    $purch->execute([$user['id'], $pid]);
+    $purch->execute([$user['id'], $uPhone, $uPhone, $uEmail, $uEmail, $pid]);
     if (!$purch->fetch()) json_error('You can only review products you have received', 403);
 
-    // Check already reviewed
+    // Check already reviewed -> update if already reviewed, else insert
     $dup = $db->prepare('SELECT id FROM product_reviews WHERE user_id = ? AND product_id = ?');
     $dup->execute([$user['id'], $pid]);
-    if ($dup->fetch()) json_error('You already reviewed this product', 409);
+    $existing = $dup->fetch();
+    if ($existing) {
+        $db->prepare(
+            'UPDATE product_reviews SET rating = ?, comment = ?, created_at = NOW() WHERE id = ?'
+        )->execute([$rating, $data['comment'] ?? null, $existing['id']]);
+        json_ok(['message' => 'Review updated successfully']);
+    }
 
     $db->prepare(
         'INSERT INTO product_reviews (product_id, user_id, rating, comment) VALUES (?,?,?,?)'

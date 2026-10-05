@@ -390,8 +390,23 @@ if ($method === 'PUT') {
     $data = get_body();
 
     if ($user['role'] === 'customer') {
-        // Customer can only cancel pending orders
         if ((int) $order['user_id'] !== $user['id']) json_error('Forbidden', 403);
+        $newStatus = $data['order_status'] ?? null;
+        if ($newStatus === 'delivered') {
+            $db->prepare("UPDATE orders SET order_status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$id]);
+            $db->prepare("UPDATE seller_orders SET status = 'delivered', updated_at = NOW() WHERE order_id = ?")->execute([$id]);
+            $soStmt = $db->prepare("SELECT id FROM seller_orders WHERE order_id = ?");
+            $soStmt->execute([$id]);
+            $sos = $soStmt->fetchAll();
+            foreach ($sos as $so) {
+                $db->prepare(
+                    "INSERT INTO delivery_tracking (seller_order_id, status, location, note, updated_by)
+                     VALUES (?, 'delivered', 'Customer Address', 'Customer confirmed receipt of order package.', ?)"
+                )->execute([$so['id'], $user['id']]);
+            }
+            json_ok(['message' => 'Delivery confirmed successfully']);
+        }
+        // Customer can only cancel pending orders
         if ($order['order_status'] !== 'pending') json_error('Only pending orders can be cancelled', 400);
         $db->prepare("UPDATE orders SET order_status = 'cancelled' WHERE id = ?")->execute([$id]);
         json_ok(['message' => 'Order cancelled']);

@@ -1766,6 +1766,7 @@
           label: 'Seller',
           name: sellerStore?.store_name || state.currentUser?.name || 'Seller Store',
           avatar: (sellerStore?.store_name || state.currentUser?.name || 'S')[0].toUpperCase(),
+          logo_url: sellerStore?.logo_url || null,
           badgeClass: 'role-badge-seller',
           bgClass: 'bg-seller',
           dashUrl: '#/dash/seller',
@@ -1808,12 +1809,23 @@
 
       if (nameEl) nameEl.textContent = cur.name;
       if (roleEl) roleEl.innerHTML = `<span class="role-badge-tag ${cur.badgeClass}">${cur.label}</span>`;
-      if (avatarEl) avatarEl.textContent = cur.avatar;
+
+      const avatarImgHtml = cur.logo_url
+        ? `<img src="${cur.logo_url}" alt="${esc(cur.name)}" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;">`
+        : cur.avatar;
+
+      if (avatarEl) {
+        if (cur.logo_url) {
+          avatarEl.innerHTML = avatarImgHtml;
+        } else {
+          avatarEl.textContent = cur.avatar;
+        }
+      }
 
       if (itemsContainer) {
         itemsContainer.innerHTML = `
           <div class="profile-dropdown-header">
-            <div class="dropdown-user-avatar" style="background:var(--haat-primary);">${cur.avatar}</div>
+            <div class="dropdown-user-avatar" style="background:var(--haat-primary);overflow:hidden;">${avatarImgHtml}</div>
             <div class="dropdown-user-details">
               <strong>${esc(cur.name)}</strong>
               <span class="role-badge-tag ${cur.badgeClass}">${cur.label}</span>
@@ -3849,11 +3861,14 @@
               (s) => `
             <div class="haat-item-card" onclick="window.handleVisitStore('${esc(s.store_slug)}')" style="padding:16px;">
               <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;">
-                <div style="width:48px;height:48px;border-radius:10px;background:${s.primary_color};color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;">
-                  ${esc(s.logo_text)}
+                <div style="width:48px;height:48px;border-radius:10px;background:${s.primary_color || 'var(--haat-primary)'};color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;overflow:hidden;flex-shrink:0;">
+                  ${s.logo_url ? `<img src="${s.logo_url}" alt="${esc(s.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(s.logo_text || s.store_name?.charAt(0) || 'S')}
                 </div>
                 <div>
-                  <h4 style="font-size:14.5px;font-weight:700;color:#1E293B;">${esc(s.store_name)}</h4>
+                  <h4 style="font-size:14.5px;font-weight:700;color:#1E293B;display:flex;align-items:center;gap:6px;">
+                    ${esc(s.store_name)}
+                    ${s.verification_status === 'verified' ? '<i class="bi bi-patch-check-fill" style="color:var(--haat-gold);font-size:14px;" title="Verified Merchant"></i>' : ''}
+                  </h4>
                   <small style="color:var(--text-muted);"><i class="bi bi-geo-alt"></i> ${esc(s.district)}, ${esc(s.division)}</small>
                 </div>
               </div>
@@ -4551,13 +4566,20 @@
             : ''
         }
         <!-- Store Banner Header (No Lat/Lon Displayed) -->
-        <div class="storefront-hero-banner" style="background:${store.banner_gradient};">
+        <div class="storefront-hero-banner" style="background:${store.banner_url ? `linear-gradient(rgba(0,0,0,0.5), rgba(0,0,0,0.7)), url('${store.banner_url}') center/cover no-repeat` : (store.banner_gradient || 'linear-gradient(135deg, #1E4332 0%, #11281E 100%)')};">
           <div class="store-hero-left">
-            <div class="store-big-avatar" style="color:${store.primary_color};">
-              ${esc(store.logo_text)}
+            <div class="store-big-avatar" style="color:${store.primary_color || 'var(--haat-primary)'};overflow:hidden;">
+              ${store.logo_url ? `<img src="${store.logo_url}" alt="${esc(store.store_name)}" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;">` : esc(store.logo_text || store.store_name?.charAt(0) || 'S')}
             </div>
             <div class="store-hero-meta">
-              <h1>${esc(store.store_name)} <i class="bi bi-patch-check-fill" style="color:var(--haat-gold);font-size:18px;"></i></h1>
+              <h1>
+                ${esc(store.store_name)} 
+                ${store.verification_status === 'verified' 
+                  ? `<i class="bi bi-patch-check-fill" style="color:var(--haat-gold);font-size:18px;" title="Verified Merchant"></i>` 
+                  : store.verification_status === 'pending'
+                  ? `<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;background:rgba(255,255,255,0.2);vertical-align:middle;margin-left:6px;"><i class="bi bi-hourglass-split"></i> Verification Pending</span>`
+                  : `<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;background:rgba(255,255,255,0.2);vertical-align:middle;margin-left:6px;"><i class="bi bi-shield"></i> Unverified</span>`}
+              </h1>
               <p>${esc(store.description)}</p>
               <div style="display:flex;gap:12px;align-items:center;margin-top:8px;font-size:12px;flex-wrap:wrap;">
                 <span><i class="bi bi-geo-alt-fill"></i> ${esc(store.address)}, ${esc(store.district)}</span>
@@ -5067,10 +5089,13 @@
                 <label>Division</label>
                 <select name="division" required style="width:100%;padding:10px;border:1.5px solid #CBD5E1;border-radius:6px;">
                   <option value="Dhaka" selected>Dhaka</option>
-                  <option value="Chittagong">Chittagong</option>
+                  <option value="Chattogram">Chattogram</option>
                   <option value="Rajshahi">Rajshahi</option>
                   <option value="Khulna">Khulna</option>
+                  <option value="Barishal">Barishal</option>
                   <option value="Sylhet">Sylhet</option>
+                  <option value="Rangpur">Rangpur</option>
+                  <option value="Mymensingh">Mymensingh</option>
                 </select>
               </div>
               <div class="form-group-auth">
@@ -6825,7 +6850,16 @@
           </div>
           <div>
             <label style="font-size:12px;font-weight:700;">Division</label>
-            <input type="text" name="division" value="Dhaka" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;">
+            <select name="division" required style="width:100%;padding:8px;border:1px solid #CBD5E1;border-radius:4px;background:#fff;font-size:12px;">
+              <option value="Dhaka" selected>Dhaka</option>
+              <option value="Chattogram">Chattogram</option>
+              <option value="Rajshahi">Rajshahi</option>
+              <option value="Khulna">Khulna</option>
+              <option value="Barishal">Barishal</option>
+              <option value="Sylhet">Sylhet</option>
+              <option value="Rangpur">Rangpur</option>
+              <option value="Mymensingh">Mymensingh</option>
+            </select>
           </div>
           <div>
             <label style="font-size:12px;font-weight:700;">Postal Code</label>
@@ -7006,37 +7040,26 @@
       if (!m.is_read && m.receiver_role === viewerRole) channelMap[cId].unreadCount++;
     });
 
-    // Ensure default channels exist for Seller, Rider, HATEX, Admin
+    // Only include channels that have actual messages, OR a channel the user explicitly activated to compose a message
     if (viewerRole === 'seller') {
       const store = typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null;
-      if (store) {
-        if (!channelMap[`seller_${store.id}_order_1`]) {
-          channelMap[`seller_${store.id}_order_1`] = {
-            id: `seller_${store.id}_order_1`,
-            otherRole: 'customer',
-            otherName: 'Customer Inquiries',
-            color: '#F85606',
-            avatar: 'C',
-            messages: [],
-            unreadCount: 0
-          };
-        }
-        if (!channelMap[`seller_${store.id}_order_admin`]) {
+      if (store && state.activeChatChannel) {
+        if (state.activeChatChannel === `seller_${store.id}_order_admin` && !channelMap[`seller_${store.id}_order_admin`]) {
           channelMap[`seller_${store.id}_order_admin`] = {
             id: `seller_${store.id}_order_admin`,
             otherRole: 'admin',
-            otherName: 'Admin',
+            otherName: 'Admin Support',
             color: '#2563EB',
             avatar: 'A',
             messages: [],
             unreadCount: 0
           };
         }
-        if (!channelMap[`hatex_seller_${store.id}_order_1`]) {
+        if (state.activeChatChannel === `hatex_seller_${store.id}_order_1` && !channelMap[`hatex_seller_${store.id}_order_1`]) {
           channelMap[`hatex_seller_${store.id}_order_1`] = {
             id: `hatex_seller_${store.id}_order_1`,
             otherRole: 'hatex',
-            otherName: 'HATEX',
+            otherName: 'HATEX Logistics',
             color: '#7C3AED',
             avatar: 'H',
             messages: [],
@@ -7139,26 +7162,17 @@
     }
 
     const channels = Object.values(channelMap);
-    if (!channels.length) {
-      channels.push({
-        id: 'admin_hatex_channel',
-        otherRole: 'hatex',
-        otherName: 'HATEX',
-        color: '#7C3AED',
-        avatar: 'H',
-        messages: [],
-        unreadCount: 0
-      });
-    }
     const activeChannelId = state.activeChatChannel && channelMap[state.activeChatChannel]
       ? state.activeChatChannel
-      : channels[0].id;
+      : (channels[0] ? channels[0].id : null);
     state.activeChatChannel = activeChannelId;
-    const activeCh = channelMap[activeChannelId] || channels[0];
+    const activeCh = activeChannelId ? channelMap[activeChannelId] : null;
 
-    activeCh.messages.forEach((m) => {
-      if (m.receiver_role === viewerRole) m.is_read = 1;
-    });
+    if (activeCh) {
+      activeCh.messages.forEach((m) => {
+        if (m.receiver_role === viewerRole) m.is_read = 1;
+      });
+    }
 
     const totalUnread = channels.reduce((s, c) => s + c.unreadCount, 0);
     const showQuickMessages = viewerRole === 'seller';
@@ -7192,100 +7206,133 @@
             <div style="padding:9px 14px;background:#FAF8F5;border-bottom:1px solid #EBE4D8;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;">
               Conversations (${channels.length})
             </div>
-            ${channels
-              .map(
-                (ch) => `
-              <div class="convo-item-card ${ch.id === activeChannelId ? 'active' : ''}" onclick="window.setRoleActiveChatChannel('${ch.id}', '${viewerRole}')">
-                <div style="display:flex;align-items:center;gap:10px;">
-                  <div style="position:relative;flex-shrink:0;">
-                    <div class="user-avatar" style="width:36px;height:36px;font-size:14px;background:${ch.color};color:#fff;">
-                      ${esc(ch.avatar)}
+            ${channels.length
+              ? channels
+                  .map(
+                    (ch) => `
+                  <div class="convo-item-card ${ch.id === activeChannelId ? 'active' : ''}" onclick="window.setRoleActiveChatChannel('${ch.id}', '${viewerRole}')">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                      <div style="position:relative;flex-shrink:0;">
+                        <div class="user-avatar" style="width:36px;height:36px;font-size:14px;background:${ch.color};color:#fff;">
+                          ${esc(ch.avatar)}
+                        </div>
+                        ${ch.unreadCount > 0 ? `<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:#DC2626;color:#fff;font-size:9px;font-weight:700;display:grid;place-items:center;">${ch.unreadCount}</span>` : ''}
+                      </div>
+                      <div style="min-width:0;flex:1;">
+                        <strong style="font-size:12.5px;color:#1E293B;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(ch.otherName)}</strong>
+                        <small style="color:var(--text-muted);font-size:10.5px;text-transform:capitalize;">${esc(ch.otherRole)}</small>
+                        ${ch.messages.length ? `<div style="font-size:10.5px;color:#64748B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${esc(ch.messages[ch.messages.length - 1].message.slice(0, 38))}...</div>` : ''}
+                      </div>
                     </div>
-                    ${ch.unreadCount > 0 ? `<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:#DC2626;color:#fff;font-size:9px;font-weight:700;display:grid;place-items:center;">${ch.unreadCount}</span>` : ''}
                   </div>
-                  <div style="min-width:0;flex:1;">
-                    <strong style="font-size:12.5px;color:#1E293B;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(ch.otherName)}</strong>
-                    <small style="color:var(--text-muted);font-size:10.5px;text-transform:capitalize;">${esc(ch.otherRole)}</small>
-                    ${ch.messages.length ? `<div style="font-size:10.5px;color:#64748B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${esc(ch.messages[ch.messages.length - 1].message.slice(0, 38))}...</div>` : ''}
-                  </div>
+                `
+                  )
+                  .join('')
+              : `
+                <div style="padding:28px 14px;text-align:center;color:var(--text-muted);">
+                  <i class="bi bi-chat-left-dots" style="font-size:26px;color:#CBD5E1;display:block;margin-bottom:8px;"></i>
+                  <div style="font-weight:700;font-size:12.5px;color:#475569;">No active conversations</div>
+                  <div style="font-size:11px;color:#94A3B8;margin-top:3px;margin-bottom:14px;">Customer inquiries & courier messages appear here.</div>
+                  ${viewerRole === 'seller' ? `
+                    <button type="button" class="btn-village-outline" style="font-size:11px;padding:6px 10px;width:100%;margin-bottom:8px;" onclick="window.startRoleChat('admin')"><i class="bi bi-shield-check"></i> Message Admin</button>
+                    <button type="button" class="btn-village-outline" style="font-size:11px;padding:6px 10px;width:100%;" onclick="window.startRoleChat('hatex')"><i class="bi bi-truck"></i> Message HATEX</button>
+                  ` : ''}
                 </div>
-              </div>
-            `
-              )
-              .join('')}
+              `}
           </div>
 
           <!-- Right: Chat window -->
           <div class="dash-chat-main">
-            <div class="dash-chat-head">
-              <div style="display:flex;align-items:center;gap:10px;">
-                <div class="user-avatar" style="width:36px;height:36px;font-size:14px;background:${activeCh.color};color:#fff;">
-                  ${esc(activeCh.avatar)}
+            ${activeCh ? `
+              <div class="dash-chat-head">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <div class="user-avatar" style="width:36px;height:36px;font-size:14px;background:${activeCh.color};color:#fff;">
+                    ${esc(activeCh.avatar)}
+                  </div>
+                  <div>
+                    <strong style="font-size:14px;color:#1E293B;display:block;">${esc(activeCh.otherName)}</strong>
+                    <span style="font-size:11px;color:#10B981;"><i class="bi bi-circle-fill" style="font-size:7px;"></i> Connected</span>
+                  </div>
                 </div>
-                <div>
-                  <strong style="font-size:14px;color:#1E293B;display:block;">${esc(activeCh.otherName)}</strong>
-                  <span style="font-size:11px;color:#10B981;"><i class="bi bi-circle-fill" style="font-size:7px;"></i> Connected</span>
-                </div>
+                <span style="font-size:10.5px;color:var(--text-muted);text-transform:capitalize;background:#F1F5F9;padding:3px 8px;border-radius:12px;">${esc(activeCh.otherRole)}</span>
               </div>
-              <span style="font-size:10.5px;color:var(--text-muted);text-transform:capitalize;background:#F1F5F9;padding:3px 8px;border-radius:12px;">${esc(activeCh.otherRole)}</span>
-            </div>
 
-            <div class="dash-chat-stream" id="roleChatStream">
-              ${
-                activeCh.messages.length
-                  ? activeCh.messages
-                      .map((m) => {
-                        const isOut = m.sender_role === viewerRole;
-                        return `
-                        <div class="chat-bubble-row ${isOut ? 'outgoing' : 'incoming'}">
-                          <div class="chat-bubble-pill">
-                            ${m.is_auto_greeting ? `<span style="font-size:9.5px;font-weight:800;text-transform:uppercase;color:#EA580C;display:block;margin-bottom:2px;"><i class="bi bi-robot"></i> Auto-Greeting Sent</span>` : ''}
-                            ${esc(m.message)}
+              <div class="dash-chat-stream" id="roleChatStream">
+                ${
+                  activeCh.messages.length
+                    ? activeCh.messages
+                        .map((m) => {
+                          const isOut = m.sender_role === viewerRole;
+                          return `
+                          <div class="chat-bubble-row ${isOut ? 'outgoing' : 'incoming'}">
+                            <div class="chat-bubble-pill">
+                              ${m.is_auto_greeting ? `<span style="font-size:9.5px;font-weight:800;text-transform:uppercase;color:#EA580C;display:block;margin-bottom:2px;"><i class="bi bi-robot"></i> Auto-Greeting Sent</span>` : ''}
+                              ${esc(m.message)}
+                            </div>
+                            <span class="chat-bubble-meta">${esc(m.sender_name)} • ${m.created_at || 'Recently'}</span>
                           </div>
-                          <span class="chat-bubble-meta">${esc(m.sender_name)} • ${m.created_at || 'Recently'}</span>
-                        </div>
-                      `;
-                      })
-                      .join('')
-                  : `<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:12.5px;">
-                      <i class="bi bi-chat-quote" style="font-size:24px;display:block;margin-bottom:6px;opacity:0.6;"></i>
-                      Start a conversation with ${esc(activeCh.otherName)}.
-                    </div>`
-              }
-            </div>
-
-            ${
-              showQuickMessages
-                ? `
-              <!-- Readymade Quick Messages Strip (Only for Seller & Customer — Not shown for HATEX, Rider, or Admin) -->
-              <div class="quick-messages-strip">
-                <span style="font-size:10.5px;font-weight:800;color:#64748B;text-transform:uppercase;"><i class="bi bi-lightning-fill" style="color:var(--haat-orange);"></i> Quick Reply:</span>
-                ${sellerQuickList
-                  .map(
-                    (qMsg, qIdx) => `
-                  <button type="button" class="quick-msg-chip" onclick="window.sendQuickReadyMessage('seller', ${qIdx}, '${activeChannelId}', '${esc(activeCh.otherRole)}', '${esc(activeCh.otherName)}')">
-                    ${esc(qMsg)}
-                  </button>
-                `
-                  )
-                  .join('')}
-                <button type="button" class="quick-msg-manage-btn" onclick="window.openManageQuickMessagesModal('seller')">
-                  <i class="bi bi-pencil-square"></i> Edit Quick Replies
-                </button>
+                        `;
+                        })
+                        .join('')
+                    : `<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:12.5px;">
+                        <i class="bi bi-chat-quote" style="font-size:24px;display:block;margin-bottom:6px;opacity:0.6;"></i>
+                        Start a conversation with ${esc(activeCh.otherName)}.
+                      </div>`
+                }
               </div>
-            `
-                : ''
-            }
 
-            <form class="dash-chat-input-bar" onsubmit="event.preventDefault(); window.handleRoleChat(this, '${viewerRole}', '${activeChannelId}', '${esc(activeCh.otherRole)}', '${esc(activeCh.otherName)}');">
-              <input type="text" name="chat_text" placeholder="Message ${esc(activeCh.otherName)}..." class="msg-input-field" required autocomplete="off">
-              <button type="submit" class="msg-send-btn" title="Send"><i class="bi bi-send-fill"></i></button>
-            </form>
+              ${
+                showQuickMessages
+                  ? `
+                <!-- Readymade Quick Messages Strip (Only for Seller & Customer) -->
+                <div class="quick-messages-strip">
+                  <span style="font-size:10.5px;font-weight:800;color:#64748B;text-transform:uppercase;"><i class="bi bi-lightning-fill" style="color:var(--haat-orange);"></i> Quick Reply:</span>
+                  ${sellerQuickList
+                    .map(
+                      (qMsg, qIdx) => `
+                    <button type="button" class="quick-msg-chip" onclick="window.sendQuickReadyMessage('seller', ${qIdx}, '${activeChannelId}', '${esc(activeCh.otherRole)}', '${esc(activeCh.otherName)}')">
+                      ${esc(qMsg)}
+                    </button>
+                  `
+                    )
+                    .join('')}
+                  <button type="button" class="quick-msg-manage-btn" onclick="window.openManageQuickMessagesModal('seller')">
+                    <i class="bi bi-pencil-square"></i> Edit Quick Replies
+                  </button>
+                </div>
+              `
+                  : ''
+              }
+
+              <form class="dash-chat-input-bar" onsubmit="event.preventDefault(); window.handleRoleChat(this, '${viewerRole}', '${activeChannelId}', '${esc(activeCh.otherRole)}', '${esc(activeCh.otherName)}');">
+                <input type="text" name="chat_text" placeholder="Message ${esc(activeCh.otherName)}..." class="msg-input-field" required autocomplete="off">
+                <button type="submit" class="msg-send-btn" title="Send"><i class="bi bi-send-fill"></i></button>
+              </form>
+            ` : `
+              <div style="padding:60px 20px;text-align:center;display:grid;place-items:center;min-height:380px;">
+                <div>
+                  <i class="bi bi-chat-square-text" style="font-size:42px;color:#CBD5E1;display:block;margin-bottom:12px;"></i>
+                  <h3 style="font-size:16px;font-weight:800;color:#1E293B;margin:0 0 6px 0;">No Messages Yet</h3>
+                  <p style="font-size:12px;color:#64748B;max-width:340px;margin:0 auto 16px auto;">You have no active message conversations. You can contact Admin or HATEX Support, or wait for customer inquiries.</p>
+                  ${viewerRole === 'seller' ? `
+                    <button type="button" class="btn-village-primary" onclick="window.startRoleChat('admin')"><i class="bi bi-chat-dots-fill"></i> Message Admin Support</button>
+                  ` : ''}
+                </div>
+              </div>
+            `}
           </div>
         </div>
       </div>
     `;
   }
+
+  window.startRoleChat = function (targetRole) {
+    const store = (typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null) || state.stores[0];
+    const sId = store ? store.id : 1;
+    const cId = targetRole === 'admin' ? `seller_${sId}_order_admin` : `hatex_seller_${sId}_order_1`;
+    state.activeChatChannel = cId;
+    render();
+  };
 
   window.setRoleActiveChatChannel = function (channelId) {
     state.activeChatChannel = channelId;
@@ -7372,10 +7419,15 @@
         <div class="dash-shell">
           <!-- Sidebar (Shows Store Name only per requirement #11, no link to visit own store per requirement #7) -->
           <aside class="dash-nav-card">
-            <div class="dash-nav-header">
-              <div style="font-size:11px;color:var(--text-muted);font-weight:700;text-transform:uppercase;">SELLER STORE ACCOUNT</div>
-              <strong style="font-size:15px;color:#1E293B;display:block;">${esc(store.store_name)}</strong>
-              <small style="color:#10B981;"><i class="bi bi-check-circle"></i> ${store.free_delivery ? 'Free Delivery Active' : `Delivery: ${money(store.delivery_charge ?? 60)}`}</small>
+            <div class="dash-nav-header" style="display:flex;align-items:center;gap:12px;">
+              <div style="width:42px;height:42px;border-radius:8px;background:${store.primary_color || 'var(--haat-primary)'};color:#fff;display:grid;place-items:center;font-weight:800;font-size:16px;overflow:hidden;flex-shrink:0;">
+                ${store.logo_url ? `<img src="${store.logo_url}" alt="${esc(store.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(store.logo_text || store.store_name?.charAt(0) || 'S')}
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="font-size:10px;color:var(--text-muted);font-weight:700;text-transform:uppercase;">SELLER STORE ACCOUNT</div>
+                <strong style="font-size:14px;color:#1E293B;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(store.store_name)}</strong>
+                <small style="color:${store.free_delivery ? '#10B981' : '#64748B'};font-size:11px;"><i class="bi bi-truck"></i> ${store.free_delivery ? 'Free Delivery' : `Delivery: ${money(store.delivery_charge ?? 60)}`}</small>
+              </div>
             </div>
             <a class="dash-nav-item ${subTab === 'overview' ? 'active' : ''}" onclick="location.hash='#/dash/seller/overview'">
               <i class="bi bi-speedometer2"></i> Dashboard Overview
@@ -7485,6 +7537,44 @@
                 <p style="font-size:12.5px;color:var(--text-muted);margin-bottom:18px;">Configure your store details, default delivery charge, free delivery option, and automatic customer greeting message.</p>
 
                 <form onsubmit="event.preventDefault(); window.handleSaveStore(this);">
+                  <input type="hidden" name="store_id" value="${store.id}">
+                  <input type="hidden" name="user_id" value="${store.user_id || (state.currentUser ? state.currentUser.id : '')}">
+                  <!-- Store Visual Branding (Saved to Database) -->
+                  <div style="background:#F8FAFC;border:1.5px solid #E2E8F0;border-radius:10px;padding:16px;margin-bottom:16px;">
+                    <h4 style="font-size:14px;font-weight:800;color:#1E293B;margin:0 0 4px 0;"><i class="bi bi-images" style="color:var(--haat-orange);"></i> Store Visual Branding (Saved to Database)</h4>
+                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Upload your official Store Logo and Storefront Banner. Images are saved directly into the MySQL database (MEDIUMBLOB) and displayed across HAAT.</p>
+                    
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px;">
+                      <!-- Logo Column -->
+                      <div style="background:#fff;padding:12px;border:1px solid #E2E8F0;border-radius:8px;">
+                        <label style="font-size:12px;font-weight:700;display:block;margin-bottom:6px;color:#1E293B;"><i class="bi bi-person-badge"></i> Store Logo</label>
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                          <div id="storeLogoPreviewContainer" style="width:58px;height:58px;border-radius:8px;background:${store.primary_color || 'var(--haat-primary)'};display:grid;place-items:center;color:#fff;font-weight:800;font-size:16px;overflow:hidden;border:1px solid #CBD5E1;flex-shrink:0;">
+                            ${store.has_logo || store.logo_url ? `<img src="${store.logo_url}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='${esc(store.logo_text || 'S')}'">` : `<span>${esc(store.logo_text || store.store_name.slice(0, 3).toUpperCase())}</span>`}
+                          </div>
+                          <div style="flex:1;">
+                            <input type="file" name="logo" accept="image/*" onchange="window.previewStoreImage(this, 'storeLogoPreviewContainer')" style="font-size:12px;width:100%;">
+                            <small style="color:var(--text-muted);font-size:11px;display:block;margin-top:2px;">PNG, JPG, WebP (Max 2MB)</small>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Banner Column -->
+                      <div style="background:#fff;padding:12px;border:1px solid #E2E8F0;border-radius:8px;">
+                        <label style="font-size:12px;font-weight:700;display:block;margin-bottom:6px;color:#1E293B;"><i class="bi bi-card-image"></i> Storefront Banner</label>
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                          <div id="storeBannerPreviewContainer" style="width:120px;height:58px;border-radius:8px;background:${store.banner_gradient || '#1E4332'};display:grid;place-items:center;color:#fff;font-size:11px;overflow:hidden;border:1px solid #CBD5E1;flex-shrink:0;">
+                            ${store.has_banner || store.banner_url ? `<img src="${store.banner_url}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=\\'opacity:0.8\\'>Banner</span>'">` : '<span style="opacity:0.8;">Banner</span>'}
+                          </div>
+                          <div style="flex:1;">
+                            <input type="file" name="banner" accept="image/*" onchange="window.previewStoreImage(this, 'storeBannerPreviewContainer')" style="font-size:12px;width:100%;">
+                            <small style="color:var(--text-muted);font-size:11px;display:block;margin-top:2px;">Recommended 1200×350px (Max 5MB)</small>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px;">
                     <div>
                       <label style="font-size:12px;font-weight:700;">Store Name</label>
@@ -7512,7 +7602,16 @@
                     </div>
                     <div>
                       <label style="font-size:12px;font-weight:700;">Division</label>
-                      <input type="text" name="division" value="${esc(store.division)}" required style="width:100%;padding:10px;border:1px solid #CBD5E1;border-radius:6px;">
+                      <select name="division" required style="width:100%;padding:10px;border:1px solid #CBD5E1;border-radius:6px;background:#fff;font-size:13px;">
+                        <option value="Dhaka" ${store.division === 'Dhaka' ? 'selected' : ''}>Dhaka</option>
+                        <option value="Chattogram" ${store.division === 'Chattogram' || store.division === 'Chittagong' ? 'selected' : ''}>Chattogram</option>
+                        <option value="Rajshahi" ${store.division === 'Rajshahi' ? 'selected' : ''}>Rajshahi</option>
+                        <option value="Khulna" ${store.division === 'Khulna' ? 'selected' : ''}>Khulna</option>
+                        <option value="Barishal" ${store.division === 'Barishal' || store.division === 'Barisal' ? 'selected' : ''}>Barishal</option>
+                        <option value="Sylhet" ${store.division === 'Sylhet' ? 'selected' : ''}>Sylhet</option>
+                        <option value="Rangpur" ${store.division === 'Rangpur' ? 'selected' : ''}>Rangpur</option>
+                        <option value="Mymensingh" ${store.division === 'Mymensingh' ? 'selected' : ''}>Mymensingh</option>
+                      </select>
                     </div>
                   </div>
 
@@ -8002,6 +8101,31 @@
     `;
   }
 
+  window.previewStoreImage = function (input, containerId) {
+    if (input.files && input.files[0]) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const c = document.getElementById(containerId);
+        if (c) {
+          c.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
+        }
+        if (input.form) {
+          const fieldName = input.name + '_base64';
+          let hid = input.form.querySelector(`input[name="${fieldName}"]`);
+          if (!hid) {
+            hid = document.createElement('input');
+            hid.type = 'hidden';
+            hid.name = fieldName;
+            input.form.appendChild(hid);
+          }
+          hid.value = e.target.result;
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   window.handleSaveStore = function (form) {
     const fd = new FormData(form);
     const store = getSellerOwnStore() || state.stores[0];
@@ -8014,6 +8138,18 @@
     store.delivery_charge = Math.max(0, parseFloat(fd.get('delivery_charge')) || 0);
     store.free_delivery = fd.get('free_delivery') ? 1 : 0;
     store.auto_greeting = (fd.get('auto_greeting') || '').trim();
+
+    const logoFile = fd.get('logo');
+    if (logoFile && logoFile.size > 0) {
+      store.has_logo = true;
+      try { store.logo_url = URL.createObjectURL(logoFile); } catch (e) {}
+    }
+    const bannerFile = fd.get('banner');
+    if (bannerFile && bannerFile.size > 0) {
+      store.has_banner = true;
+      try { store.banner_url = URL.createObjectURL(bannerFile); } catch (e) {}
+    }
+
     persist();
     updateGlobalHeader();
     showToast('Store profile, delivery charge, free delivery & automatic greeting saved!', 'success');
@@ -8027,8 +8163,8 @@
     openModal(`
       <div style="padding:6px;max-height:80vh;overflow-y:auto;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
-          <div class="user-avatar" style="width:40px;height:40px;background:${store.primary_color || 'var(--haat-primary)'};color:#fff;font-size:14px;font-weight:800;">
-            ${esc(store.logo_text || store.store_name.slice(0, 3).toUpperCase())}
+          <div class="user-avatar" style="width:40px;height:40px;background:${store.primary_color || 'var(--haat-primary)'};color:#fff;font-size:14px;font-weight:800;overflow:hidden;">
+            ${store.logo_url ? `<img src="${store.logo_url}" alt="${esc(store.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(store.logo_text || store.store_name.slice(0, 3).toUpperCase())}
           </div>
           <div>
             <h3 style="font-size:18px;font-weight:800;margin:0;color:#1E293B;">Store Verification & Business KYC Submission</h3>
@@ -8157,6 +8293,9 @@
     });
 
     persist();
+    if (window.haatApiSync && typeof window.haatApiSync.submitVerification === 'function') {
+      window.haatApiSync.submitVerification(store.id, store.verification_documents);
+    }
     closeModal();
     showToast('Verification documents submitted! HAAT Admin will review your credentials for approval.', 'success');
     render();
@@ -8613,11 +8752,23 @@
     const previewContainer = document.getElementById(`prodPreview_${num}`);
     if (!previewContainer) return;
     if (input.files && input.files[0]) {
+      const file = input.files[0];
       const reader = new FileReader();
       reader.onload = function (e) {
         previewContainer.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
+        if (input.form) {
+          const fieldName = `image_${num}_base64`;
+          let hid = input.form.querySelector(`input[name="${fieldName}"]`);
+          if (!hid) {
+            hid = document.createElement('input');
+            hid.type = 'hidden';
+            hid.name = fieldName;
+            input.form.appendChild(hid);
+          }
+          hid.value = e.target.result;
+        }
       };
-      reader.readAsDataURL(input.files[0]);
+      reader.readAsDataURL(file);
     }
   };
 
@@ -8626,6 +8777,7 @@
     openModal(`
       <h3 style="font-size:18px;font-weight:800;margin-bottom:14px;"><i class="bi bi-plus-circle"></i> Add New Product to ${esc(store.store_name)}</h3>
       <form onsubmit="event.preventDefault(); window.handleAddProduct(this);" enctype="multipart/form-data">
+        <input type="hidden" name="store_id" value="${store.id}">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;">
           <div>
             <label style="font-size:12px;font-weight:700;">Product Name</label>
@@ -8971,8 +9123,8 @@
                         <tr>
                           <td>
                             <div style="display:flex;align-items:center;gap:10px;">
-                              <div class="user-avatar" style="width:38px;height:38px;background:${s.primary_color || '#1E4332'};color:#fff;font-size:13px;font-weight:800;flex-shrink:0;">
-                                ${esc(s.logo_text || s.store_name.slice(0, 3).toUpperCase())}
+                              <div class="user-avatar" style="width:38px;height:38px;background:${s.primary_color || '#1E4332'};color:#fff;font-size:13px;font-weight:800;flex-shrink:0;overflow:hidden;">
+                                ${s.logo_url ? `<img src="${s.logo_url}" alt="${esc(s.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(s.logo_text || s.store_name.slice(0, 3).toUpperCase())}
                               </div>
                               <div>
                                 <strong style="font-size:13.5px;color:#1E293B;display:flex;align-items:center;gap:4px;">
@@ -9765,8 +9917,8 @@
         <!-- Header -->
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;border-bottom:1px solid #F1F5F9;padding-bottom:12px;flex-wrap:wrap;gap:10px;">
           <div style="display:flex;align-items:center;gap:12px;">
-            <div class="user-avatar" style="width:44px;height:44px;background:${s.primary_color || '#1E4332'};color:#fff;font-size:15px;font-weight:800;">
-              ${esc(s.logo_text || s.store_name.slice(0, 3).toUpperCase())}
+            <div class="user-avatar" style="width:44px;height:44px;background:${s.primary_color || '#1E4332'};color:#fff;font-size:15px;font-weight:800;overflow:hidden;">
+              ${s.logo_url ? `<img src="${s.logo_url}" alt="${esc(s.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(s.logo_text || s.store_name.slice(0, 3).toUpperCase())}
             </div>
             <div>
               <h3 style="font-size:19px;font-weight:800;margin:0;color:#1E293B;display:flex;align-items:center;gap:6px;">
@@ -9983,7 +10135,7 @@
     persist();
 
     if (window.haatApiSync && typeof window.haatApiSync.rejectStore === 'function') {
-      window.haatApiSync.rejectStore(s.id);
+      window.haatApiSync.rejectStore(s.id, remark);
     }
 
     closeModal();
@@ -9997,6 +10149,9 @@
     s.verification_status = 'unverified';
     delete s.verified_at;
     persist();
+    if (window.haatApiSync && typeof window.haatApiSync.revokeStore === 'function') {
+      window.haatApiSync.revokeStore(s.id);
+    }
     closeModal();
     showToast(`Verification revoked for "${s.store_name}".`, 'info');
     render();
@@ -12208,8 +12363,13 @@
                         <i class="bi bi-map"></i>
                         <select name="division">
                           <option value="Dhaka" selected>Dhaka</option>
-                          <option value="Chittagong">Chittagong</option>
+                          <option value="Chattogram">Chattogram</option>
+                          <option value="Rajshahi">Rajshahi</option>
+                          <option value="Khulna">Khulna</option>
+                          <option value="Barishal">Barishal</option>
                           <option value="Sylhet">Sylhet</option>
+                          <option value="Rangpur">Rangpur</option>
+                          <option value="Mymensingh">Mymensingh</option>
                         </select>
                       </div>
                     </div>
@@ -12287,24 +12447,37 @@
                       </div>
                     </div>
                     <div class="form-group-auth">
-                      <label>Warehouse District</label>
+                      <label>Division</label>
                       <div class="input-with-icon">
-                        <i class="bi bi-geo-alt"></i>
-                        <select name="district">
+                        <i class="bi bi-map"></i>
+                        <select name="division" required>
                           <option value="Dhaka" selected>Dhaka</option>
-                          <option value="Narayanganj">Narayanganj</option>
-                          <option value="Gazipur">Gazipur</option>
-                          <option value="Tangail">Tangail</option>
+                          <option value="Chattogram">Chattogram</option>
+                          <option value="Rajshahi">Rajshahi</option>
+                          <option value="Khulna">Khulna</option>
+                          <option value="Barishal">Barishal</option>
+                          <option value="Sylhet">Sylhet</option>
+                          <option value="Rangpur">Rangpur</option>
+                          <option value="Mymensingh">Mymensingh</option>
                         </select>
                       </div>
                     </div>
                   </div>
 
-                  <div class="form-group-auth">
-                    <label>Store Physical / Pickup Address</label>
-                    <div class="input-with-icon">
-                      <i class="bi bi-geo-alt"></i>
-                      <input type="text" name="address" placeholder="e.g. Shop 12, Anam Rangs Plaza, Dhanmondi" required>
+                  <div class="auth-form-grid">
+                    <div class="form-group-auth">
+                      <label>District</label>
+                      <div class="input-with-icon">
+                        <i class="bi bi-geo-alt"></i>
+                        <input type="text" name="district" placeholder="e.g. Dhaka, Narayanganj" value="Dhaka" required>
+                      </div>
+                    </div>
+                    <div class="form-group-auth">
+                      <label>Store Physical / Pickup Address</label>
+                      <div class="input-with-icon">
+                        <i class="bi bi-geo-alt"></i>
+                        <input type="text" name="address" placeholder="e.g. Shop 12, Anam Rangs Plaza, Dhanmondi" required>
+                      </div>
                     </div>
                   </div>
 
@@ -12499,12 +12672,13 @@
                     return `
                 <div class="haat-item-card" onclick="location.hash='#/store/${s.store_slug}'" style="padding:20px;cursor:pointer;${isOwn ? 'border:2px solid #3B82F6;background:#F8FAFC;' : ''}">
                   <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;">
-                    <div style="width:52px;height:52px;border-radius:12px;background:${s.primary_color};color:#fff;display:grid;place-items:center;font-weight:800;font-size:20px;">
-                      ${esc(s.logo_text)}
+                    <div style="width:52px;height:52px;border-radius:12px;background:${s.primary_color || 'var(--haat-primary)'};color:#fff;display:grid;place-items:center;font-weight:800;font-size:20px;overflow:hidden;flex-shrink:0;">
+                      ${s.logo_url ? `<img src="${s.logo_url}" alt="${esc(s.store_name)}" style="width:100%;height:100%;object-fit:cover;">` : esc(s.logo_text || s.store_name?.charAt(0) || 'S')}
                     </div>
                     <div>
                       <div style="display:flex;align-items:center;gap:6px;">
                         <h3 style="font-size:16px;font-weight:800;color:#1E293B;margin:0;">${esc(s.store_name)}</h3>
+                        ${s.verification_status === 'verified' ? '<i class="bi bi-patch-check-fill" style="color:var(--haat-gold);font-size:15px;" title="Verified Merchant"></i>' : ''}
                         ${isOwn ? '<span class="role-badge-tag role-badge-seller" style="font-size:9.5px;padding:2px 6px;">Your Store</span>' : ''}
                       </div>
                       <small style="color:var(--text-muted);"><i class="bi bi-geo-alt"></i> ${esc(s.district)}, ${esc(s.division)}</small>

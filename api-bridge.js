@@ -22,8 +22,11 @@
   async function api(ep, opts = {}) {
     try {
       const headers = { 'Content-Type': 'application/json' };
-      const uid = localStorage.getItem('HAAT_API_USER_ID') || (window.state?.currentUser?.id ? String(window.state.currentUser.id) : null);
-      if (uid) headers['X-User-Id'] = uid;
+      const uid = (window.state?.currentUser?.id ? String(window.state.currentUser.id) : null) || localStorage.getItem('HAAT_API_USER_ID');
+      if (uid) {
+        headers['X-User-Id'] = uid;
+        try { localStorage.setItem('HAAT_API_USER_ID', uid); } catch (e) {}
+      }
       const r = await fetch(BASE + ep, {
         headers: { ...headers, ...(opts.headers || {}) },
         credentials: 'same-origin',
@@ -394,9 +397,9 @@
             delivery_charge: 60,
             free_delivery: 0,
             auto_greeting: `Assalamu Alaikum! Welcome to ${st.store_name}.`,
-            status: 'active',
+            status: st.status || 'pending',
             is_published: 1,
-            verification_status: 'verified'
+            verification_status: st.verification_status || (st.status === 'approved' ? 'verified' : 'unverified')
           };
           if (storeIdx >= 0) window.state.stores[storeIdx] = { ...window.state.stores[storeIdx], ...storeObj };
           else window.state.stores.push(storeObj);
@@ -552,9 +555,9 @@
             delivery_charge: 60,
             free_delivery: 0,
             auto_greeting: `Assalamu Alaikum! Welcome to ${st.store_name}.`,
-            status: 'active',
+            status: st.status || 'pending',
             is_published: 1,
-            verification_status: 'verified'
+            verification_status: st.verification_status || 'unverified'
           };
           if (storeIdx >= 0) window.state.stores[storeIdx] = newStoreObj;
           else window.state.stores.push(newStoreObj);
@@ -752,31 +755,45 @@
     }
 
     /* Seller Product Creation → Sync to MySQL */
+    /* Product Creation Sync to MySQL (including Binary BLOB Photos: image_1, image_2, image_3) */
     const _origAddProd = window.handleAddProduct;
     if (_origAddProd) {
       window.handleAddProduct = async function (form) {
         const fd = new FormData(form);
         const store = typeof window.getSellerOwnStore === 'function' ? window.getSellerOwnStore() : window.state.stores[0];
+        const uid = localStorage.getItem('HAAT_API_USER_ID') || (window.state?.currentUser?.id ? String(window.state.currentUser.id) : null);
+
+        if (store && store.id && !fd.has('store_id')) {
+          fd.append('store_id', String(store.id));
+        }
+
         _origAddProd.call(this, form);
 
         if (store && store.id) {
-          const prodData = {
-            store_id: store.id,
-            name: fd.get('name'),
-            price: parseFloat(fd.get('price')),
-            sale_price: parseFloat(fd.get('sale_price')) || null,
-            sku: fd.get('sku'),
-            subcategory_id: Number(fd.get('subcategory_id') || 101),
-            stock: parseInt(fd.get('stock') || 25),
-            is_featured: 1,
-            description: 'Verified merchant product in HAAT catalogue.'
-          };
-          const r = await apiPost('/products.php', prodData);
-          if (r.ok && r.data.id) {
-            const added = window.state.products.find(p => p.name === prodData.name) || window.state.products[0];
-            if (added) {
-              added.id = r.data.id;
-              if (window.persist) window.persist();
+          const r = await fetch(BASE + '/products.php', {
+            method: 'POST',
+            body: fd,
+            headers: uid ? { 'X-User-Id': String(uid) } : {}
+          }).catch(err => {
+            console.error('Product creation network error:', err);
+            return null;
+          });
+
+          if (r && r.ok) {
+            const res = await r.json().catch(() => ({}));
+            if (res && res.id) {
+              const added = window.state.products.find(p => p.name === fd.get('name')) || window.state.products[0];
+              if (added) {
+                added.id = res.id;
+                if (res.image_1_url) added.image_1 = res.image_1_url;
+                if (res.image_2_url) added.image_2 = res.image_2_url;
+                if (res.image_3_url) added.image_3 = res.image_3_url;
+                if (window.persist) window.persist();
+                if (window.render) window.render();
+              }
+              if (typeof window.showToast === 'function') {
+                window.showToast('Product & high-res binary photos stored in MySQL database!', 'success');
+              }
             }
           }
         }
@@ -805,24 +822,77 @@
       };
     }
 
-    /* Seller Store Profile Updates → Sync to MySQL */
+    /* Seller Store Profile Updates → Sync to MySQL (including Logo & Banner BLOBs) */
     const _origSaveStore = window.handleSaveStore;
     if (_origSaveStore) {
       window.handleSaveStore = async function (form) {
-        _origSaveStore.call(this, form);
         const fd = new FormData(form);
         const store = (typeof window.getSellerOwnStore === 'function' ? window.getSellerOwnStore() : null) || window.state.stores[0];
+        const uid = localStorage.getItem('HAAT_API_USER_ID') || (window.state?.currentUser?.id ? String(window.state.currentUser.id) : null);
+
+        if (store && store.id && !fd.has('store_id')) {
+          fd.append('store_id', String(store.id));
+        }
+        if (uid && !fd.has('user_id')) {
+          fd.append('user_id', String(uid));
+        }
+
+        if (_origSaveStore) _origSaveStore.call(this, form);
+
         if (store && store.id) {
-          await apiPut('/stores.php', {
-            store_name: fd.get('store_name'),
-            description: fd.get('description'),
-            address: fd.get('address'),
-            district: fd.get('district'),
-            division: fd.get('division'),
-            delivery_charge: parseFloat(fd.get('delivery_charge')) || 0,
-            free_delivery: fd.get('free_delivery') ? 1 : 0,
-            auto_greeting: (fd.get('auto_greeting') || '').trim()
-          }).catch(() => {});
+          const r = await fetch(BASE + '/stores.php?action=update', {
+            method: 'POST',
+            body: fd,
+            headers: uid ? { 'X-User-Id': String(uid) } : {}
+          }).catch(err => {
+            console.error('Store update network error:', err);
+            return null;
+          });
+
+          if (r && r.ok) {
+            const res = await r.json().catch(() => ({}));
+            if (res && res.store) {
+              const updatedStore = res.store;
+              const idx = window.state.stores.findIndex(s => s.id === updatedStore.id);
+              const merged = {
+                ...(idx >= 0 ? window.state.stores[idx] : {}),
+                ...updatedStore,
+                logo_text: (updatedStore.store_name || store.store_name || 'S').substring(0, 3).toUpperCase(),
+                logo_url: updatedStore.logo_url || (idx >= 0 ? window.state.stores[idx].logo_url : null),
+                banner_url: updatedStore.banner_url || (idx >= 0 ? window.state.stores[idx].banner_url : null),
+                has_logo: updatedStore.has_logo !== undefined ? !!updatedStore.has_logo : (idx >= 0 ? window.state.stores[idx].has_logo : false),
+                has_banner: updatedStore.has_banner !== undefined ? !!updatedStore.has_banner : (idx >= 0 ? window.state.stores[idx].has_banner : false)
+              };
+
+              if (idx >= 0) {
+                window.state.stores[idx] = merged;
+              } else {
+                window.state.stores.unshift(merged);
+              }
+
+              if (window.state.activeRole === 'seller' && window.state.currentUser) {
+                window.state.currentUser.name = updatedStore.store_name;
+              }
+
+              if (typeof window.persist === 'function') window.persist();
+              if (typeof window.updateGlobalHeader === 'function') window.updateGlobalHeader();
+              if (typeof window.render === 'function') window.render();
+              if (typeof window.showToast === 'function') {
+                window.showToast('Store settings, delivery details & visual branding saved directly to MySQL database!', 'success');
+              }
+            }
+          } else {
+            let errMsg = 'Failed to sync store to database.';
+            if (r) {
+              try {
+                const errData = await r.json();
+                if (errData && errData.error) errMsg = errData.error;
+              } catch (e) {}
+            }
+            if (typeof window.showToast === 'function') {
+              window.showToast(errMsg, 'error');
+            }
+          }
         }
       };
     }
@@ -869,6 +939,59 @@
       window.deleteAddress = function (addressId) {
         _origDelAddress.call(this, addressId);
         apiDel(`/addresses.php?id=${addressId}`).catch(() => {});
+      };
+    }
+
+    /* Seller Verification Submission → Sync to MySQL */
+    const _origSubmitVer = window.handleSellerSubmitVerification;
+    if (_origSubmitVer) {
+      window.handleSellerSubmitVerification = async function (form) {
+        _origSubmitVer.call(this, form);
+        const store = (typeof getSellerOwnStore === 'function' ? getSellerOwnStore() : null) || window.state?.stores?.[0];
+        if (store) {
+          await apiPost(`/stores.php?action=submit_verification&store_id=${store.id}`, {
+            store_id: store.id,
+            verification_documents: store.verification_documents
+          }).catch(() => null);
+        }
+      };
+    }
+
+    /* Persona & User Switchers → Keep MySQL Session User in Sync */
+    const _origInstantDemo = window.instantDemoLogin;
+    if (_origInstantDemo) {
+      window.instantDemoLogin = function (role) {
+        _origInstantDemo.call(this, role);
+        if (window.state?.currentUser?.id) {
+          try {
+            localStorage.setItem('HAAT_API_USER_ID', String(window.state.currentUser.id));
+            localStorage.setItem('HAAT_API_ROLE', String(window.state.currentUser.role || role));
+          } catch (e) {}
+        }
+      };
+    }
+
+    const _origSwitchPersona = window.switchPersona;
+    if (_origSwitchPersona) {
+      window.switchPersona = function (newRole) {
+        _origSwitchPersona.call(this, newRole);
+        if (window.state?.currentUser?.id) {
+          try {
+            localStorage.setItem('HAAT_API_USER_ID', String(window.state.currentUser.id));
+            localStorage.setItem('HAAT_API_ROLE', String(window.state.currentUser.role || newRole));
+          } catch (e) {}
+        }
+      };
+    }
+
+    const _origLogout = window.logout;
+    if (_origLogout) {
+      window.logout = function () {
+        _origLogout.call(this);
+        try {
+          localStorage.removeItem('HAAT_API_USER_ID');
+          localStorage.removeItem('HAAT_API_ROLE');
+        } catch (e) {}
       };
     }
 
@@ -940,27 +1063,31 @@
       const dbStores = stores.data.stores.map(s => {
         const col = fallbackColors[s.id % fallbackColors.length] || '#1E4332';
         const localStore = (st.stores || []).find(x => x.id === s.id);
-        const mappedStatus = s.status === 'approved' ? 'verified' : (s.status === 'rejected' ? 'rejected' : (s.status === 'pending' ? 'pending' : (localStore?.verification_status || 'verified')));
+        const mappedStatus = s.verification_status || 'unverified';
         return {
           id: s.id, user_id: s.user_id,
           store_name: s.store_name, store_slug: s.store_slug,
           description: s.description || '',
           logo_text: (s.store_name || 'S').substring(0, 3).toUpperCase(),
+          logo_url: s.has_logo ? s.logo_url : (localStore?.logo_url || null),
+          banner_url: s.has_banner ? s.banner_url : (localStore?.banner_url || null),
+          has_logo: !!s.has_logo,
+          has_banner: !!s.has_banner,
           primary_color: col,
           banner_gradient: `linear-gradient(135deg, ${col} 0%, #0a0a0a 100%)`,
           address: s.address || '', district: s.district || 'Dhaka',
           division: s.division || 'Dhaka', postal_code: s.postal_code || '',
           latitude: parseFloat(s.latitude) || 23.77,
           longitude: parseFloat(s.longitude) || 90.40,
-          delivery_charge: s.delivery_charge ?? 60,
-          free_delivery:   s.free_delivery   ?? 0,
+          delivery_charge: parseFloat(s.delivery_charge) || 60,
+          free_delivery:   parseInt(s.free_delivery) || 0,
           auto_greeting: s.auto_greeting || `Welcome to ${s.store_name}!`,
           status: s.status || 'approved',
           is_published: s.is_published ?? 1,
           verification_status: mappedStatus,
-          verification_documents: localStore?.verification_documents || s.verification_documents || null,
-          verified_at: s.status === 'approved' ? (localStore?.verified_at || s.created_at) : null,
-          rejection_reason: localStore?.rejection_reason || null,
+          verification_documents: s.verification_documents || localStore?.verification_documents || null,
+          verified_at: s.verification_status === 'verified' ? (localStore?.verified_at || s.created_at) : null,
+          rejection_reason: s.rejection_reason || null,
         };
       });
 
@@ -968,6 +1095,43 @@
       const dbStoreIds = new Set(dbStores.map(x => x.id));
       const localOnly = (st.stores || []).filter(x => !dbStoreIds.has(x.id));
       st.stores = [...dbStores, ...localOnly];
+    }
+
+    /* Live sync logged-in seller store from MySQL */
+    const currentUid = localStorage.getItem('HAAT_API_USER_ID') || (st.currentUser ? String(st.currentUser.id) : null);
+    if (currentUid) {
+      const myStoreRes = await apiGet('/stores.php?action=mine').catch(() => null);
+      if (myStoreRes && myStoreRes.ok && myStoreRes.data && myStoreRes.data.id) {
+        const ms = myStoreRes.data;
+        const col = '#F85606';
+        const mappedMine = {
+          id: ms.id, user_id: ms.user_id,
+          store_name: ms.store_name, store_slug: ms.store_slug,
+          description: ms.description || '',
+          logo_text: (ms.store_name || 'S').substring(0, 3).toUpperCase(),
+          logo_url: ms.has_logo ? ms.logo_url : null,
+          banner_url: ms.has_banner ? ms.banner_url : null,
+          has_logo: !!ms.has_logo,
+          has_banner: !!ms.has_banner,
+          primary_color: col,
+          banner_gradient: `linear-gradient(135deg, ${col} 0%, #0a0a0a 100%)`,
+          address: ms.address || '', district: ms.district || 'Dhaka',
+          division: ms.division || 'Dhaka', postal_code: ms.postal_code || '',
+          latitude: parseFloat(ms.latitude) || 23.77,
+          longitude: parseFloat(ms.longitude) || 90.40,
+          delivery_charge: parseFloat(ms.delivery_charge) || 60,
+          free_delivery: parseInt(ms.free_delivery) || 0,
+          auto_greeting: ms.auto_greeting || `Welcome to ${ms.store_name}!`,
+          status: ms.status || 'approved',
+          is_published: ms.is_published ?? 1,
+          verification_status: ms.verification_status || 'unverified',
+          verification_documents: ms.verification_documents || null,
+          rejection_reason: ms.rejection_reason || null,
+        };
+        const mIdx = st.stores.findIndex(x => x.id === ms.id || String(x.user_id) === String(ms.user_id));
+        if (mIdx >= 0) st.stores[mIdx] = { ...st.stores[mIdx], ...mappedMine };
+        else st.stores.unshift(mappedMine);
+      }
     }
 
     /* Products — KEEP original images if they are real URLs */
@@ -1045,12 +1209,12 @@
           postal_code: '1205',
           latitude: parseFloat(stRow.latitude) || 23.75,
           longitude: parseFloat(stRow.longitude) || 90.39,
-          delivery_charge: 60,
-          free_delivery: 0,
-          auto_greeting: `Assalamu Alaikum! Welcome to ${stRow.store_name}.`,
-          status: 'active',
-          is_published: 1,
-          verification_status: 'verified'
+          delivery_charge: parseFloat(stRow.delivery_charge) || 60,
+          free_delivery: parseInt(stRow.free_delivery) || 0,
+          auto_greeting: stRow.auto_greeting || `Assalamu Alaikum! Welcome to ${stRow.store_name}.`,
+          status: stRow.status || 'pending',
+          is_published: stRow.is_published ?? 1,
+          verification_status: stRow.verification_status || (stRow.status === 'approved' ? 'verified' : 'unverified')
         };
         if (sIdx >= 0) st.stores[sIdx] = { ...st.stores[sIdx], ...sObj };
         else st.stores.push(sObj);
@@ -1157,12 +1321,14 @@
   });
 
   window.haatApiSync = {
-    saveProduct:   (p) => p.id && apiPut(`/products.php?id=${p.id}`, p).catch(() => {}),
-    deleteProduct: (pid) => apiDel(`/products.php?id=${pid}`).catch(() => {}),
-    saveOrder:     (o) => o.id && apiPut(`/orders.php?id=${o.id}`, { order_status: o.order_status }).catch(() => {}),
-    saveInventory: (pid, qty) => apiPut(`/inventory.php?product_id=${pid}`, { quantity: qty }).catch(() => {}),
-    approveStore:  (sid) => apiPut(`/stores.php?action=approve&id=${sid}`).catch(() => {}),
-    rejectStore:   (sid) => apiPut(`/stores.php?action=reject&id=${sid}`).catch(() => {}),
+    saveProduct:        (p) => p.id && apiPut(`/products.php?id=${p.id}`, p).catch(() => {}),
+    deleteProduct:      (pid) => apiDel(`/products.php?id=${pid}`).catch(() => {}),
+    saveOrder:          (o) => o.id && apiPut(`/orders.php?id=${o.id}`, { order_status: o.order_status }).catch(() => {}),
+    saveInventory:      (pid, qty) => apiPut(`/inventory.php?product_id=${pid}`, { quantity: qty }).catch(() => {}),
+    approveStore:       (sid) => apiPut(`/stores.php?action=approve&id=${sid}`).catch(() => {}),
+    rejectStore:        (sid, reason) => apiPut(`/stores.php?action=reject&id=${sid}`, { reason }).catch(() => {}),
+    revokeStore:        (sid) => apiPut(`/stores.php?action=revoke&id=${sid}`).catch(() => {}),
+    submitVerification: (sid, docs) => apiPost(`/stores.php?action=submit_verification&store_id=${sid}`, { store_id: sid, verification_documents: docs }).catch(() => {}),
     syncCustomerOrders,
     syncSellerOrders,
     syncWishlist,

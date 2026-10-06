@@ -42,14 +42,26 @@ if ($method === 'POST') {
 
     $logo     = null;
     $logoMime = null;
-    if (!empty($_FILES['logo'])) {
-        $logoMime = $_FILES['logo']['type'];
+    if (!empty($_FILES['logo']['tmp_name']) && is_uploaded_file($_FILES['logo']['tmp_name'])) {
+        $logoMime = $_FILES['logo']['type'] ?: 'image/png';
         $logo     = file_get_contents($_FILES['logo']['tmp_name']);
+    } elseif (!empty($_POST['logo_base64'])) {
+        $raw = $_POST['logo_base64'];
+        if (preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $raw, $m)) {
+            $logo     = base64_decode($m[2]);
+            $logoMime = $m[1];
+        }
     }
 
     $stmt = $db->prepare('INSERT INTO brands (name, slug, logo, logo_mime_type) VALUES (?, ?, ?, ?)');
     $stmt->execute([$data['name'], $slug, $logo, $logoMime]);
-    json_ok(['message' => 'Brand created', 'id' => (int) $db->lastInsertId()], 201);
+    $newId = (int) $db->lastInsertId();
+    $base = api_base_url();
+    json_ok([
+        'message'  => 'Brand created',
+        'id'       => $newId,
+        'logo_url' => "$base/images.php?type=brand_logo&id=$newId"
+    ], 201);
 }
 
 // ─── PUT — update brand (admin) ───────────────────────────
@@ -65,6 +77,12 @@ if ($method === 'PUT') {
         $params[] = $data['name'];
         $fields[] = 'slug = ?';
         $params[] = make_slug($data['name']);
+    }
+    if (!empty($data['logo_base64']) && preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $data['logo_base64'], $m)) {
+        $fields[] = 'logo = ?';
+        $params[] = base64_decode($m[2]);
+        $fields[] = 'logo_mime_type = ?';
+        $params[] = $m[1];
     }
     if (!$fields) json_error('Nothing to update', 422);
     $params[] = $id;

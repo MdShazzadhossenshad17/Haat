@@ -82,23 +82,24 @@ switch ($action) {
             $description = trim($data['description'] ?? ("Official HAAT merchant store: " . $storeName));
 
             $sIns = $db->prepare(
-                'INSERT INTO stores (user_id, store_name, store_slug, description, address, district, division, status, is_published)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO stores (user_id, store_name, store_slug, description, address, district, division, status, is_published, verification_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
-            $sIns->execute([$userId, $storeName, $storeSlug, $description, $address, $district, $division, 'approved', 1]);
+            $sIns->execute([$userId, $storeName, $storeSlug, $description, $address, $district, $division, 'approved', 1, 'unverified']);
             $storeId = (int) $db->lastInsertId();
 
             $storeData = [
-                'id'          => $storeId,
-                'user_id'     => $userId,
-                'store_name'  => $storeName,
-                'store_slug'  => $storeSlug,
-                'description' => $description,
-                'address'     => $address,
-                'district'    => $district,
-                'division'    => $division,
-                'status'      => 'approved',
-                'is_published'=> 1
+                'id'                  => $storeId,
+                'user_id'             => $userId,
+                'store_name'          => $storeName,
+                'store_slug'          => $storeSlug,
+                'description'         => $description,
+                'address'             => $address,
+                'district'            => $district,
+                'division'            => $division,
+                'status'              => 'approved',
+                'is_published'        => 1,
+                'verification_status' => 'unverified'
             ];
             $_SESSION['store_id'] = $storeId;
         } else {
@@ -182,11 +183,14 @@ switch ($action) {
         $storeId   = null;
         $storeData = null;
         if ($user['role'] === 'seller') {
-            $sStmt = $db->prepare('SELECT id, user_id, store_name, store_slug, description, address, district, division, status, is_published FROM stores WHERE user_id = ?');
+            $sStmt = $db->prepare('SELECT id, user_id, store_name, store_slug, description, address, district, division, status, is_published, delivery_charge, free_delivery, auto_greeting, verification_status, verification_documents, rejection_reason, (logo IS NOT NULL) AS has_logo, (banner IS NOT NULL) AS has_banner FROM stores WHERE user_id = ?');
             $sStmt->execute([$user['id']]);
             $store = $sStmt->fetch();
             if ($store) {
                 $storeId   = (int) $store['id'];
+                $base      = api_base_url();
+                $store['logo_url']   = "$base/images.php?type=store_logo&id={$store['id']}";
+                $store['banner_url'] = "$base/images.php?type=store_banner&id={$store['id']}";
                 $storeData = $store;
             }
         }
@@ -272,9 +276,15 @@ switch ($action) {
             if ($row) {
                 $storeData = null;
                 if ($row['role'] === 'seller') {
-                    $s = $db->prepare('SELECT id, user_id, store_name, store_slug, description, address, district, division, status, is_published FROM stores WHERE user_id = ?');
+                    $s = $db->prepare('SELECT id, user_id, store_name, store_slug, description, address, district, division, status, is_published, delivery_charge, free_delivery, auto_greeting, verification_status, verification_documents, rejection_reason, (logo IS NOT NULL) AS has_logo, (banner IS NOT NULL) AS has_banner FROM stores WHERE user_id = ?');
                     $s->execute([$row['id']]);
-                    $storeData = $s->fetch() ?: null;
+                    $stCheck = $s->fetch();
+                    if ($stCheck) {
+                        $base = api_base_url();
+                        $stCheck['logo_url']   = "$base/images.php?type=store_logo&id={$stCheck['id']}";
+                        $stCheck['banner_url'] = "$base/images.php?type=store_banner&id={$stCheck['id']}";
+                        $storeData = $stCheck;
+                    }
                 }
                 $riderData = null;
                 if ($row['role'] === 'logistics') {

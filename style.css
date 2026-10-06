@@ -260,6 +260,7 @@ img {
   display: grid;
   place-items: center;
   font-size: 15px;
+  overflow: hidden;
 }
 
 .user-info {
@@ -327,6 +328,7 @@ img {
   font-weight: 800;
   font-size: 15px;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .dropdown-user-details {

@@ -61,16 +61,15 @@ function json_error(string $message, int $code = 400): never {
  */
 function auth_required(): array {
     $db = getDB();
-    $userId = $_SESSION['user_id'] ?? null;
-    if (!$userId && !empty($_SERVER['HTTP_X_USER_ID'])) {
-        $userId = (int) $_SERVER['HTTP_X_USER_ID'];
-    }
+    $headerUid = !empty($_SERVER['HTTP_X_USER_ID']) ? (int) $_SERVER['HTTP_X_USER_ID'] : null;
+    $sessUid   = !empty($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : null;
+    $userId    = $headerUid ?: $sessUid;
 
     if (!$userId) {
         json_error('Unauthorized — please log in', 401);
     }
 
-    if (empty($_SESSION['user_id']) || empty($_SESSION['user_role']) || empty($_SESSION['store_id'])) {
+    if (empty($_SESSION['user_id']) || (int)$_SESSION['user_id'] !== (int)$userId || empty($_SESSION['user_role'])) {
         $uStmt = $db->prepare('SELECT id, name, role FROM users WHERE id = ?');
         $uStmt->execute([$userId]);
         $u = $uStmt->fetch();
@@ -79,6 +78,7 @@ function auth_required(): array {
         $_SESSION['user_id']   = (int) $u['id'];
         $_SESSION['user_role'] = $u['role'];
         $_SESSION['user_name'] = $u['name'];
+        $_SESSION['store_id']  = null;
 
         if ($u['role'] === 'seller') {
             $sStmt = $db->prepare('SELECT id FROM stores WHERE user_id = ?');

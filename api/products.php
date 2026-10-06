@@ -237,14 +237,23 @@ if ($method === 'POST') {
 
     $sku = $_POST['sku'] ?? body('sku', 'SKU-' . strtoupper(bin2hex(random_bytes(4))));
 
-    // Images
+    // Images (Stored as binary MEDIUMBLOB in MySQL)
     $img = [];
     for ($n = 1; $n <= 3; $n++) {
-        $img["image_$n"]           = null;
-        $img["image_{$n}_mime"]    = null;
-        if (!empty($_FILES["image_$n"])) {
+        $img["image_$n"]        = null;
+        $img["image_{$n}_mime"] = null;
+        if (!empty($_FILES["image_$n"]['tmp_name']) && is_uploaded_file($_FILES["image_$n"]['tmp_name'])) {
             $img["image_$n"]        = file_get_contents($_FILES["image_$n"]['tmp_name']);
-            $img["image_{$n}_mime"] = $_FILES["image_$n"]['type'];
+            $img["image_{$n}_mime"] = $_FILES["image_$n"]['type'] ?: 'image/jpeg';
+        } elseif (!empty($_POST["image_{$n}_base64"])) {
+            $raw = $_POST["image_{$n}_base64"];
+            if (preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $raw, $m)) {
+                $img["image_$n"]        = base64_decode($m[2]);
+                $img["image_{$n}_mime"] = $m[1];
+            }
+        } elseif (!empty($_POST["image_$n"]) && preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $_POST["image_$n"], $m)) {
+            $img["image_$n"]        = base64_decode($m[2]);
+            $img["image_{$n}_mime"] = $m[1];
         }
     }
 
@@ -285,7 +294,15 @@ if ($method === 'POST') {
     $qty = (int) ($_POST['quantity'] ?? body('quantity', body('stock', 25)));
     $db->prepare('INSERT INTO inventory (product_id, quantity) VALUES (?, ?) ON DUPLICATE KEY UPDATE quantity = ?')->execute([$productId, $qty, $qty]);
 
-    json_ok(['message' => 'Product created', 'id' => $productId, 'slug' => $slug], 201);
+    $base = api_base_url();
+    json_ok([
+        'message' => 'Product created',
+        'id' => $productId,
+        'slug' => $slug,
+        'image_1_url' => "$base/images.php?type=product&id=$productId&n=1",
+        'image_2_url' => "$base/images.php?type=product&id=$productId&n=2",
+        'image_3_url' => "$base/images.php?type=product&id=$productId&n=3"
+    ], 201);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -318,6 +335,18 @@ if ($method === 'PUT') {
             $params[] = $data[$f];
         }
     }
+
+    // Binary image updates via PUT
+    for ($n = 1; $n <= 3; $n++) {
+        $raw = $data["image_{$n}_base64"] ?? ($data["image_$n"] ?? null);
+        if ($raw && preg_match('/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/', $raw, $m)) {
+            $fields[] = "image_$n = ?";
+            $params[] = base64_decode($m[2]);
+            $fields[] = "image_{$n}_mime_type = ?";
+            $params[] = $m[1];
+        }
+    }
+
     if (!$fields) json_error('Nothing to update', 422);
     $params[] = $id;
     $db->prepare('UPDATE products SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);

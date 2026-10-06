@@ -811,11 +811,57 @@
         _origSubmitRev.call(this, form, targetPid);
 
         try {
-          await apiPost('/reviews.php', {
+          const postRes = await apiPost('/reviews.php', {
             product_id: targetPid,
             rating: rating,
             comment: comment
           });
+
+          if (!postRes.ok) {
+            console.warn('[HAAT Bridge] Review API sync response error:', postRes.status, postRes.data);
+            return;
+          }
+
+          /* Re-fetch this product's reviews from DB so the real DB ID
+             replaces the temporary local fake-ID that app.js assigned,
+             preventing duplicates or "disappearing" review on next sync. */
+          const refRes = await apiGet(`/reviews.php?product_id=${targetPid}&limit=50`);
+          const st = window.state;
+          if (refRes.ok && Array.isArray(refRes.data?.reviews) && st) {
+            const freshRevs = refRes.data.reviews.map(r => ({
+              id: r.id,
+              product_id: targetPid,
+              user_id: r.user_id || st.currentUser?.id,
+              user_name: r.user_name || r.reviewer_name || 'Verified Buyer',
+              rating: parseInt(r.rating || 5),
+              comment: r.comment || '',
+              order_number: '',
+              verified_purchase: 1,
+              created_at: (r.created_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+            }));
+            const freshIds = new Set(freshRevs.map(x => x.id));
+            /* Keep reviews for other products, replace all for this product */
+            st.reviews = [...freshRevs, ...(st.reviews || []).filter(x => Number(x.product_id) !== targetPid || !freshIds.has(x.id))];
+
+            /* Recalculate product rating from authoritative DB data */
+            const prod = (st.products || []).find(p => Number(p.id) === targetPid);
+            if (prod) {
+              const sum = refRes.data.summary;
+              if (sum && sum.total > 0) {
+                prod.rating = parseFloat(sum.avg) || 0;
+                prod.reviews_count = parseInt(sum.total) || freshRevs.length;
+              } else {
+                const prodRevs = freshRevs;
+                prod.reviews_count = prodRevs.length;
+                prod.rating = prodRevs.length > 0
+                  ? parseFloat((prodRevs.reduce((a, r) => a + Number(r.rating), 0) / prodRevs.length).toFixed(1))
+                  : 0;
+              }
+            }
+
+            try { window.persist && window.persist(); } catch (_) {}
+            try { window.render && window.render(); } catch (_) {}
+          }
         } catch (e) {
           console.warn('[HAAT Bridge] Review API sync error:', e);
         }

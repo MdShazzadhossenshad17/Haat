@@ -50,9 +50,9 @@ if ($method === 'GET') {
         json_ok(['reviews' => $allReviews, 'page' => $p['page']]);
     }
 
-    $p    = paginate(10);
+    $p    = paginate(50);
     $stmt = $db->prepare(
-        "SELECT r.id, r.rating, r.comment, r.created_at,
+        "SELECT r.id, r.product_id, r.user_id, r.rating, r.comment, r.created_at,
                 u.name AS reviewer_name, u.name AS user_name
          FROM product_reviews r
          JOIN users u ON u.id = r.user_id
@@ -90,20 +90,32 @@ if ($method === 'POST') {
     $uStmt = $db->prepare('SELECT phone, email FROM users WHERE id = ?');
     $uStmt->execute([$user['id']]);
     $uInfo = $uStmt->fetch();
-    $uPhone = !empty($uInfo['phone']) ? $uInfo['phone'] : null;
-    $uEmail = !empty($uInfo['email']) ? $uInfo['email'] : null;
+    $uPhone = !empty($uInfo['phone']) ? trim($uInfo['phone']) : null;
 
     $purch = $db->prepare(
         "SELECT oi.id FROM order_items oi
          JOIN seller_orders so ON so.id = oi.seller_order_id
          JOIN orders o ON o.id = so.order_id
-         WHERE (o.user_id = ? OR (? IS NOT NULL AND o.shipping_phone = ?) OR (? IS NOT NULL AND o.shipping_email = ?))
+         WHERE (o.user_id = ? OR (? IS NOT NULL AND o.shipping_phone = ?))
            AND oi.product_id = ?
            AND (so.status = 'delivered' OR o.order_status = 'delivered')
          LIMIT 1"
     );
-    $purch->execute([$user['id'], $uPhone, $uPhone, $uEmail, $uEmail, $pid]);
-    if (!$purch->fetch()) json_error('You can only review products you have received', 403);
+    $purch->execute([$user['id'], $uPhone, $uPhone, $pid]);
+    $orderItem = $purch->fetch();
+
+    if (!$orderItem) {
+        // Fallback: check if the user has any delivered order in the system
+        $directCheck = $db->prepare(
+            "SELECT id FROM orders WHERE user_id = ? AND order_status = 'delivered' LIMIT 1"
+        );
+        $directCheck->execute([$user['id']]);
+        if (!$directCheck->fetch() && $user['role'] !== 'admin') {
+            json_error('You can only review products you have received', 403);
+        }
+    }
+
+    $orderItemId = !empty($orderItem['id']) ? (int)$orderItem['id'] : null;
 
     // Check already reviewed -> update if already reviewed, else insert
     $dup = $db->prepare('SELECT id FROM product_reviews WHERE user_id = ? AND product_id = ?');
@@ -111,16 +123,44 @@ if ($method === 'POST') {
     $existing = $dup->fetch();
     if ($existing) {
         $db->prepare(
-            'UPDATE product_reviews SET rating = ?, comment = ?, created_at = NOW() WHERE id = ?'
-        )->execute([$rating, $data['comment'] ?? null, $existing['id']]);
-        json_ok(['message' => 'Review updated successfully']);
+            'UPDATE product_reviews SET rating = ?, comment = ?, order_item_id = COALESCE(?, order_item_id), created_at = NOW() WHERE id = ?'
+        )->execute([$rating, $data['comment'] ?? null, $orderItemId, $existing['id']]);
+
+        // Re-calculate product summary
+        $sumStmt = $db->prepare(
+            'SELECT ROUND(AVG(rating),1) AS avg, COUNT(*) AS total FROM product_reviews WHERE product_id = ?'
+        );
+        $sumStmt->execute([$pid]);
+        $summary = $sumStmt->fetch();
+
+        json_ok([
+            'message' => 'Review updated successfully',
+            'id' => (int)$existing['id'],
+            'product_id' => $pid,
+            'rating' => $rating,
+            'summary' => $summary
+        ]);
     }
 
     $db->prepare(
-        'INSERT INTO product_reviews (product_id, user_id, rating, comment) VALUES (?,?,?,?)'
-    )->execute([$pid, $user['id'], $rating, $data['comment'] ?? null]);
+        'INSERT INTO product_reviews (product_id, user_id, order_item_id, rating, comment) VALUES (?,?,?,?,?)'
+    )->execute([$pid, $user['id'], $orderItemId, $rating, $data['comment'] ?? null]);
+    $newId = (int) $db->lastInsertId();
 
-    json_ok(['message' => 'Review submitted'], 201);
+    // Re-calculate product summary
+    $sumStmt = $db->prepare(
+        'SELECT ROUND(AVG(rating),1) AS avg, COUNT(*) AS total FROM product_reviews WHERE product_id = ?'
+    );
+    $sumStmt->execute([$pid]);
+    $summary = $sumStmt->fetch();
+
+    json_ok([
+        'message' => 'Review submitted',
+        'id' => $newId,
+        'product_id' => $pid,
+        'rating' => $rating,
+        'summary' => $summary
+    ], 201);
 }
 
 // ─── DELETE ───────────────────────────────────────────────
